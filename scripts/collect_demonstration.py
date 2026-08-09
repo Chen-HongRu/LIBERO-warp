@@ -1,24 +1,23 @@
 import argparse
-import cv2
 import datetime
-import h5py
-import init_path
 import json
-import numpy as np
 import os
-import robosuite as suite
 import time
 from copy import deepcopy
 from glob import glob
+
+import h5py
+import numpy as np
+import robosuite as suite
 from robosuite import load_part_controller_config
 from robosuite.controllers.composite.composite_controller_factory import (
     refactor_composite_controller_config,
 )
+from robosuite.utils.errors import RandomizationError
 from robosuite.wrappers import DataCollectionWrapper, VisualizationWrapper
 
-
 import libero.libero.envs.bddl_utils as BDDLUtils
-from libero.libero.envs import *
+from libero.libero.envs.bddl_base_domain import TASK_MAPPING
 
 
 def collect_human_trajectory(
@@ -36,12 +35,22 @@ def collect_human_trajectory(
         env_configuration (str): specified environment configuration
     """
 
+    if arm != "right":
+        raise ValueError(
+            "LIBERO's current Panda environments only support the right arm; "
+            f"got --arm {arm!r}."
+        )
+    if len(env.robots) != 1 or env.robots[0].arms != ["right"]:
+        raise ValueError(
+            "LIBERO demo collection currently requires exactly one right-arm Panda."
+        )
+
     reset_success = False
     while not reset_success:
         try:
             env.reset()
             reset_success = True
-        except:
+        except RandomizationError:
             continue
 
     # ID = 2 always corresponds to agentview
@@ -66,7 +75,7 @@ def collect_human_trajectory(
         }
         for robot in env.robots
     ]
-    active_robot_idx = 0 if env_configuration == "bimanual" else (arm == "left")
+    active_robot_idx = 0
 
     while True:
         count += 1
@@ -90,7 +99,9 @@ def collect_human_trajectory(
             elif controller_input_type == "absolute":
                 action_dict[robot_arm] = input_ac_dict[f"{robot_arm}_abs"]
             else:
-                raise ValueError(f"Unsupported controller input type: {controller_input_type}")
+                raise ValueError(
+                    f"Unsupported controller input type: {controller_input_type}"
+                )
 
         env_action = [
             robot.create_action_vector(all_prev_gripper_actions[i])
@@ -99,7 +110,9 @@ def collect_human_trajectory(
         env_action[active_robot_idx] = active_robot.create_action_vector(action_dict)
         action = np.concatenate(env_action)
         for gripper_ac in all_prev_gripper_actions[active_robot_idx]:
-            all_prev_gripper_actions[active_robot_idx][gripper_ac] = action_dict[gripper_ac]
+            all_prev_gripper_actions[active_robot_idx][gripper_ac] = action_dict[
+                gripper_ac
+            ]
 
         # Run environment step
 
@@ -185,17 +198,16 @@ def gather_demonstrations_as_hdf5(
         if len(states) == 0:
             continue
 
-        # Delete the first actions and the last state. This is because when the DataCollector wrapper
-        # recorded the states and actions, the states were recorded AFTER playing that action.
+        # The wrapper records states after actions, so discard the final state.
         del states[-1]
         assert len(states) == len(actions)
 
         num_eps += 1
-        ep_data_grp = grp.create_group("demo_{}".format(num_eps))
+        ep_data_grp = grp.create_group(f"demo_{num_eps}")
 
         # store model xml as an attribute
         xml_path = os.path.join(directory, ep_directory, "model.xml")
-        with open(xml_path, "r") as f:
+        with open(xml_path) as f:
             xml_str = f.read()
         ep_data_grp.attrs["model_file"] = xml_str
 
@@ -205,15 +217,16 @@ def gather_demonstrations_as_hdf5(
 
     # write dataset attributes (metadata)
     now = datetime.datetime.now()
-    grp.attrs["date"] = "{}-{}-{}".format(now.month, now.day, now.year)
-    grp.attrs["time"] = "{}:{}:{}".format(now.hour, now.minute, now.second)
+    grp.attrs["date"] = f"{now.month}-{now.day}-{now.year}"
+    grp.attrs["time"] = f"{now.hour}:{now.minute}:{now.second}"
     grp.attrs["repository_version"] = suite.__version__
     grp.attrs["env"] = env_name
     grp.attrs["env_info"] = env_info
 
     grp.attrs["problem_info"] = json.dumps(problem_info)
     grp.attrs["bddl_file_name"] = args.bddl_file
-    grp.attrs["bddl_file_content"] = str(open(args.bddl_file, "r", encoding="utf-8"))
+    with open(args.bddl_file, encoding="utf-8") as bddl_file:
+        grp.attrs["bddl_file_content"] = bddl_file.read()
 
     f.close()
 
@@ -230,7 +243,7 @@ if __name__ == "__main__":
         "--robots",
         nargs="+",
         type=str,
-        default="Panda",
+        default=["Panda"],
         help="Which robot(s) to use in the env",
     )
     parser.add_argument(
@@ -243,7 +256,8 @@ if __name__ == "__main__":
         "--arm",
         type=str,
         default="right",
-        help="Which arm to control (eg bimanual) 'right' or 'left'",
+        choices=["right"],
+        help="LIBERO currently supports only the Panda right arm.",
     )
     parser.add_argument(
         "--camera",
@@ -255,7 +269,10 @@ if __name__ == "__main__":
         "--controller",
         type=str,
         default="OSC_POSE",
-        help="Choice of controller. Only 'OSC_POSE' is supported for LIBERO's Panda variants (robosuite's IK controller only recognizes robot name 'Panda').",
+        help=(
+            "Only 'OSC_POSE' is supported for LIBERO Panda variants; "
+            "robosuite IK only recognizes the robot name 'Panda'."
+        ),
         choices=["OSC_POSE"],
     )
     parser.add_argument("--device", type=str, default="spacemouse")
@@ -285,7 +302,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Get controller config
-    robot_for_controller = args.robots[0] if isinstance(args.robots, list) else args.robots
+    robot_for_controller = (
+        args.robots[0] if isinstance(args.robots, list) else args.robots
+    )
     controller_config = load_part_controller_config(default_controller=args.controller)
     controller_config = refactor_composite_controller_config(
         controller_config, robot_for_controller, ["right"]
@@ -299,9 +318,6 @@ if __name__ == "__main__":
 
     assert os.path.exists(args.bddl_file)
     problem_info = BDDLUtils.get_problem_info(args.bddl_file)
-    # Check if we're using a multi-armed environment and use env_configuration argument if so
-
-    # Create environment
     problem_name = problem_info["problem_name"]
     domain_name = problem_info["domain_name"]
     language_instruction = problem_info["language_instruction"]
@@ -340,7 +356,9 @@ if __name__ == "__main__":
         from robosuite.devices import Keyboard
 
         device = Keyboard(
-            env=env, pos_sensitivity=args.pos_sensitivity, rot_sensitivity=args.rot_sensitivity
+            env=env,
+            pos_sensitivity=args.pos_sensitivity,
+            rot_sensitivity=args.rot_sensitivity,
         )
         env.viewer.add_keypress_callback(device.on_press)
     elif args.device == "spacemouse":

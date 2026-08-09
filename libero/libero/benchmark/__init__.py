@@ -1,10 +1,10 @@
 import abc
 import os
-import glob
-import random
+from pathlib import Path
+from typing import NamedTuple
+
 import torch
 
-from typing import List, NamedTuple, Type
 from libero.libero import get_libero_path
 from libero.libero.benchmark.libero_suite_task_map import libero_task_map
 
@@ -142,9 +142,9 @@ class Benchmark(abc.ABC):
         return bddl_file_path
 
     def get_task_demonstration(self, i):
-        assert (
-            0 <= i and i < self.n_tasks
-        ), f"[error] task number {i} is outer of range {self.n_tasks}"
+        assert 0 <= i and i < self.n_tasks, (
+            f"[error] task number {i} is outer of range {self.n_tasks}"
+        )
         # this path is relative to the datasets folder
         demo_path = f"{self.tasks[i].problem_folder}/{self.tasks[i].name}_demo.hdf5"
         return demo_path
@@ -156,12 +156,37 @@ class Benchmark(abc.ABC):
         return self.task_embs[i]
 
     def get_task_init_states(self, i):
-        init_states_path = os.path.join(
-            get_libero_path("init_states"),
-            self.tasks[i].problem_folder,
-            self.tasks[i].init_states_file,
-        )
-        init_states = torch.load(init_states_path, weights_only=False)
+        """Load a benchmark init-state file from a trusted local LIBERO install.
+
+        Init-state files are PyTorch pickle archives, so ``weights_only=False``
+        is required for the historical LIBERO format. This method is not a safe
+        loader for files from untrusted sources: only use the bundled files or
+        another local directory whose contents you have verified.
+        """
+        init_states_root = Path(get_libero_path("init_states")).expanduser().resolve()
+        init_states_path = (
+            init_states_root
+            / self.tasks[i].problem_folder
+            / self.tasks[i].init_states_file
+        ).resolve()
+        try:
+            init_states_path.relative_to(init_states_root)
+        except ValueError as error:
+            raise ValueError(
+                "LIBERO init-state metadata resolves outside the configured "
+                f"init_states root: {init_states_path}."
+            ) from error
+        if init_states_path.suffix != ".pruned_init":
+            raise ValueError(
+                "LIBERO benchmark init-state files must use the trusted "
+                f"'.pruned_init' format; got {init_states_path}."
+            )
+        if not init_states_path.is_file():
+            raise FileNotFoundError(
+                "Expected a trusted local LIBERO init-state file at "
+                f"{init_states_path}."
+            )
+        init_states = torch.load(str(init_states_path), weights_only=False)
         return init_states
 
     def set_task_embs(self, task_embs):
@@ -196,9 +221,9 @@ class LIBERO_GOAL(Benchmark):
 class LIBERO_90(Benchmark):
     def __init__(self, task_order_index=0):
         super().__init__(task_order_index=task_order_index)
-        assert (
-            task_order_index == 0
-        ), "[error] currently only support task order for 10-task suites"
+        assert task_order_index == 0, (
+            "[error] currently only support task order for 10-task suites"
+        )
         self.name = "libero_90"
         self._make_benchmark()
 

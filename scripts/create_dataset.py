@@ -1,23 +1,20 @@
 import argparse
+import json
 import os
 from pathlib import Path
+
 import h5py
 import numpy as np
-import json
-import robosuite
-import robosuite.utils.transform_utils as T
 import robosuite.macros as macros
+import robosuite.utils.transform_utils as T
+from robosuite.utils.errors import RandomizationError
 
-import init_path
 import libero.libero.utils.utils as libero_utils
-import cv2
-from PIL import Image
-from robosuite.utils import camera_utils
-
-from libero.libero.envs import *
 from libero.libero import get_libero_path
+from libero.libero.envs import TASK_MAPPING
 
-def main():
+
+def parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--demo-file", default="demo.hdf5")
 
@@ -45,19 +42,20 @@ def main():
         action="store_true",
     )
 
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
 
     hdf5_path = args.demo_file
     f = h5py.File(hdf5_path, "r")
     env_name = f["data"].attrs["env"]
 
-    env_args = f["data"].attrs["env_info"]
     env_kwargs = json.loads(f["data"].attrs["env_info"])
 
     problem_info = json.loads(f["data"].attrs["problem_info"])
-    problem_info["domain_name"]
     problem_name = problem_info["problem_name"]
-    language_instruction = problem_info["language_instruction"]
 
     # list of all demonstrations episodes
     demos = list(f["data"].keys())
@@ -65,9 +63,10 @@ def main():
     bddl_file_name = f["data"].attrs["bddl_file_name"]
 
     bddl_file_dir = os.path.dirname(bddl_file_name)
-    replace_bddl_prefix = "/".join(bddl_file_dir.split("bddl_files/")[:-1] + "bddl_files")
-
-    hdf5_path = os.path.join(get_libero_path("datasets"), bddl_file_dir.split("bddl_files/")[-1].replace(".bddl", "_demo.hdf5"))
+    dataset_relative_path = bddl_file_dir.split("bddl_files/")[-1].replace(
+        ".bddl", "_demo.hdf5"
+    )
+    hdf5_path = os.path.join(get_libero_path("datasets"), dataset_relative_path)
 
     output_parent_dir = Path(hdf5_path).parent
     output_parent_dir.mkdir(parents=True, exist_ok=True)
@@ -100,7 +99,8 @@ def main():
     )
 
     grp.attrs["bddl_file_name"] = bddl_file_name
-    grp.attrs["bddl_file_content"] = open(bddl_file_name, "r").read()
+    with open(bddl_file_name, encoding="utf-8") as bddl_file:
+        grp.attrs["bddl_file_content"] = bddl_file.read()
     print(grp.attrs["bddl_file_content"])
 
     env = TASK_MAPPING[problem_name](
@@ -118,22 +118,18 @@ def main():
     grp.attrs["env_args"] = json.dumps(env_args)
     print(grp.attrs["env_args"])
     total_len = 0
-    demos = demos
-
     cap_index = 5
 
-    for (i, ep) in enumerate(demos):
+    for i, ep in enumerate(demos):
         print("Playing back random episode... (press ESC to quit)")
 
-        # # select an episode randomly
-        # read the model xml, using the metadata stored in the attribute for this episode
-        model_xml = f["data/{}".format(ep)].attrs["model_file"]
-        reset_success = False
-        while not reset_success:
+        # Read the model XML stored with this demonstration episode.
+        model_xml = f[f"data/{ep}"].attrs["model_file"]
+        while True:
             try:
                 env.reset()
-                reset_success = True
-            except:
+                break
+            except RandomizationError:
                 continue
 
         model_xml = libero_utils.postprocess_model_xml(model_xml, {})
@@ -142,8 +138,8 @@ def main():
             env.viewer.set_camera(0)
 
         # load the flattened mujoco states
-        states = f["data/{}/states".format(ep)][()]
-        actions = np.array(f["data/{}/actions".format(ep)][()])
+        states = f[f"data/{ep}/states"][()]
+        actions = np.array(f[f"data/{ep}/actions"][()])
 
         num_actions = actions.shape[0]
 
@@ -165,26 +161,21 @@ def main():
         agentview_depths = []
         eye_in_hand_depths = []
 
-        agentview_seg = {0: [], 1: [], 2: [], 3: [], 4: []}
-
-        rewards = []
-        dones = []
-
         valid_index = []
 
         for j, action in enumerate(actions):
-
             obs, reward, done, info = env.step(action)
 
             if j < num_actions - 1:
-                # ensure that the actions deterministically lead to the same recorded states
+                # Check that actions reproduce the recorded MuJoCo states.
                 state_playback = env.sim.get_state().flatten()
                 # assert(np.all(np.equal(states[j + 1], state_playback)))
                 err = np.linalg.norm(states[j + 1] - state_playback)
 
                 if err > 0.01:
                     print(
-                        f"[warning] playback diverged by {err:.2f} for ep {ep} at step {j}"
+                        "[warning] playback diverged by "
+                        f"{err:.2f} for ep {ep} at step {j}"
                     )
 
             # Skip recording because the force sensor is not stable in
@@ -212,7 +203,6 @@ def main():
             robot_states.append(env.get_robot_state_vector(obs))
 
             if args.use_camera_obs:
-
                 if args.use_depth:
                     agentview_depths.append(obs["agentview_depth"])
                     eye_in_hand_depths.append(obs["robot0_eye_in_hand_depth"])

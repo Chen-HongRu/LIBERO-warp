@@ -1,20 +1,23 @@
-"""
-This is a script for creating various files frrom templates. This is to ease the process for users who want to extend LIBERO, creating new tasks. You would still need to make necessary changes based on the template to serve your own need, but the hope is that we save you much time by providing the necessar templates.
+"""Create task-extension files from the bundled LIBERO templates.
+
+The templates are a starting point for custom tasks and still require task-
+specific changes.
 """
 
-import os
 import xml.etree.ElementTree as ET
+from importlib.resources import as_file, files
 
-from libero.libero import get_libero_path
 from libero.libero.envs.textures import get_texture_file_list
 
 
+def _template(name):
+    return files("libero").joinpath("templates", name)
+
+
 def create_problem_class_from_file(class_name):
-    template_source_file = os.path.join(
-        get_libero_path("benchmark_root"), "../../templates/problem_class_template.py"
-    )
-    with open(template_source_file, "r") as f:
-        lines = f.readlines()
+    with as_file(_template("problem_class_template.py")) as template_source_file:
+        with open(template_source_file) as f:
+            lines = f.readlines()
     new_lines = []
     for line in lines:
         if "YOUR_CLASS_NAME" in line:
@@ -26,12 +29,10 @@ def create_problem_class_from_file(class_name):
 
 
 def create_scene_xml_file(scene_name):
-    """This is just an example for you to jump start. For more advanced editing, you will need to figure out yourself. You can take a look at all the available xml files for reference."""
-    template_source_file = os.path.join(
-        get_libero_path("benchmark_root"), "../../templates/scene_template.xml"
-    )
+    """Create a scene XML template for further task-specific editing."""
     parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
-    tree = ET.parse(template_source_file, parser)
+    with as_file(_template("scene_template.xml")) as template_source_file:
+        tree = ET.parse(template_source_file, parser)
     root = tree.getroot()
 
     basic_elements = [
@@ -41,8 +42,8 @@ def create_scene_xml_file(scene_name):
         ("Walls", "tex-wall"),
     ]
 
-    for (element_name, texture_name) in basic_elements:
-        element = root.findall('.//texture[@name="{}"]'.format(texture_name))[0]
+    for element_name, texture_name in basic_elements:
+        element = root.findall(f'.//texture[@name="{texture_name}"]')[0]
         type = None
         if "floor" in element_name.lower():
             type = "floor"
@@ -50,7 +51,7 @@ def create_scene_xml_file(scene_name):
             type = "table"
         elif "wall" in element_name.lower():
             type = "wall"
-        # If you want to change the path of the texture file, you can pass in texture_path variable to change it.
+        # Pass a different texture_path to change where textures are discovered.
         texture_list = get_texture_file_list(type=type, texture_path="../")
         for i, (texture_name, texture_file_path) in enumerate(texture_list):
             print(f"[{i}]: {texture_name}")
@@ -59,7 +60,8 @@ def create_scene_xml_file(scene_name):
     tree.write(f"{scene_name}.xml", encoding="utf-8")
     print(f"Creating scene {scene_name} at the file: {scene_name}.xml")
     print(
-        "\n [Notice] The texture fiile paths are specified in the relative path format assuming your scene xml will be placed in the path libero/libero/assets/scenes/. "
+        "\n[Notice] Texture paths are relative and assume the scene XML will be "
+        "placed under libero/libero/assets/scenes/."
     )
     return
 

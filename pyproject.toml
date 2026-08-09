@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "libero-warp"
+version = "0.1.0"
+description = "LIBERO tasks, assets, and official MuJoCo evaluation backend for LIBERO-warp"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Bo Liu" },
+  { name = "Yifeng Zhu" },
+  { name = "Chongkai Gao" },
+  { name = "Yihao Feng" },
+  { name = "Qiang Liu" },
+  { name = "Yuke Zhu" },
+  { name = "Peter Stone" },
+]
+dependencies = [
+  "bddl==1.0.1",
+  "cloudpickle==2.1.0",
+  "easydict==1.9",
+  "future==0.18.2",
+  "gym==0.25.2",
+  "h5py>=3.11",
+  "imageio>=2.34",
+  "matplotlib>=3.8",
+  "mujoco==3.11.0",
+  "mujoco-warp==3.11.0",
+  "numpy==1.26.4",
+  "opencv-python>=4.10",
+  "pillow>=10",
+  "pyyaml>=6.0.2",
+  "robosuite==1.5.2",
+  "termcolor>=2.4",
+  "torch==2.13.0",
+  "tqdm>=4.66",
+  "warp-lang==1.16.0",
+]
+
+[project.optional-dependencies]
+huggingface = ["huggingface-hub>=0.24", "httpx[socks]>=0.28"]
+notebook = ["ipykernel>=6.29", "ipython>=8.22"]
+teleop = ["hidapi>=0.14"]
+
+[project.scripts]
+"libero.create_template" = "scripts.create_template:main"
+"libero.download_datasets" = "benchmark_scripts.download_libero_datasets:main"
+
+[tool.setuptools.packages.find]
+include = ["benchmark_scripts*", "libero*", "scripts*"]
+
+[tool.setuptools.package-data]
+libero = ["templates/*"]
+"libero.libero" = [
+  "assets/**/*",
+  "bddl_files/**/*",
+  "init_files/**/*",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

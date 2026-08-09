@@ -1,9 +1,14 @@
-# This is an example script to get all the affordance information specified in xml files.
+# Print the affordance information specified in the registered object XML files.
 
-import init_path
 from libero.libero.envs.objects import OBJECTS_DICT
 from libero.libero.utils.object_utils import get_affordance_regions
 
-affordances = get_affordance_regions(OBJECTS_DICT)
 
-print(affordances)
+def main():
+    """Print affordance regions for every registered LIBERO object."""
+    affordances = get_affordance_regions(OBJECTS_DICT)
+    print(affordances)
+
+
+if __name__ == "__main__":
+    main()

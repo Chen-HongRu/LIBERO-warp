@@ -1,0 +1,166 @@
+name: M0 official-backend verification
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - 'codex/**'
+  schedule:
+    - cron: '17 3 * * 0'
+  workflow_dispatch:
+
+env:
+  PYTHONUNBUFFERED: '1'
+  MUJOCO_GL: osmesa
+
+jobs:
+  static-and-package:
+    name: Locked static, package, and import smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.11'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install locked development environment
+        run: uv sync --locked --group dev
+      - name: Check maintained M0 source and tests
+        run: >-
+          uvx ruff format --check
+          libero/libero/envs/mujoco3_compat.py
+          libero/libero/envs/env_wrapper.py
+          libero/libero/envs/__init__.py
+          libero/libero/benchmark/__init__.py
+          libero/libero/utils/download_utils.py
+          benchmark_scripts/__init__.py
+          benchmark_scripts/download_libero_datasets.py
+          scripts/collect_demonstration.py
+          scripts/libero_100_collect_demonstrations.py
+          scripts/create_dataset.py
+          scripts/create_template.py
+          scripts/get_affordance_info.py
+          scripts/__init__.py
+          tests
+      - name: Lint maintained M0 source and tests
+        run: >-
+          uvx ruff check
+          libero/libero/envs/mujoco3_compat.py
+          libero/libero/envs/env_wrapper.py
+          libero/libero/envs/__init__.py
+          libero/libero/benchmark/__init__.py
+          libero/libero/utils/download_utils.py
+          benchmark_scripts/__init__.py
+          benchmark_scripts/download_libero_datasets.py
+          scripts/collect_demonstration.py
+          scripts/libero_100_collect_demonstrations.py
+          scripts/create_dataset.py
+          scripts/create_template.py
+          scripts/get_affordance_info.py
+          scripts/__init__.py
+          tests
+      - name: Run static contracts
+        run: uv run pytest -m static
+      - name: Require migration regressions to be real tests
+        run: '! rg --fixed-strings xfail tests/test_migration_regressions.py tests/test_mujoco3_compatibility.py'
+      - name: Import packaged console entrypoint
+        shell: bash
+        run: |
+          config_dir="$RUNNER_TEMP/libero-config"
+          mkdir -p "$config_dir"
+          printf '%s\n' \
+            "benchmark_root: $GITHUB_WORKSPACE/libero/libero" \
+            "bddl_files: $GITHUB_WORKSPACE/libero/libero/bddl_files" \
+            "init_states: $GITHUB_WORKSPACE/libero/libero/init_files" \
+            "datasets: $RUNNER_TEMP/datasets" \
+            "assets: $GITHUB_WORKSPACE/libero/libero/assets" \
+            > "$config_dir/config.yaml"
+          MUJOCO_GL=disable LIBERO_CONFIG_PATH="$config_dir" uv run python -c \
+            'import scripts.create_template as entry; assert callable(entry.main)'
+
+  official-pilot:
+    name: Headless official pilot
+    runs-on: ubuntu-latest
+    needs: static-and-package
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.11'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install Mesa software renderer
+        run: sudo apt-get update && sudo apt-get install --yes libgl1-mesa-dri libosmesa6
+      - name: Install locked development environment with downloader dependency
+        run: uv sync --locked --extra huggingface --group dev
+      - name: Run controller compatibility and official pilot
+        run: >-
+          LIBERO_RUN_OFFICIAL_INTEGRATION=1
+          uv run pytest
+          tests/test_mujoco3_compatibility.py
+          tests/test_migration_regressions.py
+          tests/test_packaging_contract.py
+          tests/test_dataset_download_contract.py
+          tests/test_official_backend_integration.py::test_robosuite_152_mujoco_311_official_pilot_smoke
+          -q
+
+  full-official-130:
+    name: Scheduled full 130-task official backend
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    needs: static-and-package
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.11'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install Mesa software renderer
+        run: sudo apt-get update && sudo apt-get install --yes libgl1-mesa-dri libosmesa6
+      - name: Install locked development environment
+        run: uv sync --locked --group dev
+      - name: Run all official tasks
+        run: LIBERO_RUN_OFFICIAL_INTEGRATION=1 uv run pytest -m official_integration -q
+
+  public-demo-replay:
+    name: Public demo replay
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    needs: full-official-130
+    env:
+      LIBERO_DEMO_ROOT: ${{ runner.temp }}/libero-demo-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.11'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Cache public demo
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LIBERO_DEMO_ROOT }}
+          key: libero-public-demo-kitchen-scene5-v1
+      - name: Install locked development environment with public downloader
+        run: uv sync --locked --extra huggingface --group dev
+      - name: Download public successful demo
+        shell: bash
+        run: |
+          uv run --extra huggingface python - <<'PY'
+          import os
+          from huggingface_hub import hf_hub_download
+
+          hf_hub_download(
+              repo_id="yifengzhu-hf/LIBERO-datasets",
+              repo_type="dataset",
+              filename="libero_90/KITCHEN_SCENE5_close_the_top_drawer_of_the_cabinet_demo.hdf5",
+              local_dir=os.environ["LIBERO_DEMO_ROOT"],
+          )
+          PY
+      - name: Install Mesa software renderer
+        run: sudo apt-get update && sudo apt-get install --yes libgl1-mesa-dri libosmesa6
+      - name: Replay complete public successful demonstration
+        run: LIBERO_RUN_NIGHTLY=1 uv run pytest tests/test_official_backend_integration.py::test_local_demo_replay_hook -q

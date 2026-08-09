@@ -1,12 +1,25 @@
+import colorsys
 import os
+
+import cv2
+import matplotlib.cm as cm
 import numpy as np
 import robosuite as suite
-import matplotlib.cm as cm
-
+from robosuite.controllers.composite.composite_controller_factory import (
+    refactor_composite_controller_config,
+)
 from robosuite.utils.errors import RandomizationError
 
 import libero.libero.envs.bddl_utils as BDDLUtils
-from libero.libero.envs import *
+from libero.libero.envs.bddl_base_domain import TASK_MAPPING
+
+
+def randomize_colors(count, bright=True):
+    """Return distinct RGB colors for segmentation visualization."""
+    brightness = 1.0 if bright else 0.7
+    return np.array(
+        [colorsys.hsv_to_rgb(index / count, 1.0, brightness) for index in range(count)]
+    )
 
 
 class ControlEnv:
@@ -40,20 +53,19 @@ class ControlEnv:
         renderer_config=None,
         **kwargs,
     ):
-        assert os.path.exists(
-            bddl_file_name
-        ), f"[error] {bddl_file_name} does not exist!"
+        assert os.path.exists(bddl_file_name), (
+            f"[error] {bddl_file_name} does not exist!"
+        )
 
-        controller_configs = suite.load_part_controller_config(default_controller=controller)
+        controller_configs = suite.load_part_controller_config(
+            default_controller=controller
+        )
         robot_type = robots[0] if isinstance(robots, list) else robots
-        controller_configs = suite.controllers.composite.composite_controller_factory.refactor_composite_controller_config(
+        controller_configs = refactor_composite_controller_config(
             controller_configs, robot_type, ["right"]
         )
 
         problem_info = BDDLUtils.get_problem_info(bddl_file_name)
-        # Check if we're using a multi-armed environment and use env_configuration argument if so
-
-        # Create environment
         self.problem_name = problem_info["problem_name"]
         self.domain_name = problem_info["domain_name"]
         self.language_instruction = problem_info["language_instruction"]
@@ -92,17 +104,11 @@ class ControlEnv:
         return self.env.step(action)
 
     def reset(self):
-        success = False
-        while not success:
+        while True:
             try:
-                ret = self.env.reset()
-                success = True
+                return self.env.reset()
             except RandomizationError:
-                pass
-            finally:
                 continue
-
-        return ret
 
     def check_success(self):
         return self.env._check_success()
@@ -184,16 +190,16 @@ class SegmentationRenderEnv(OffScreenRenderEnv):
         kwargs["camera_widths"] = camera_widths
         self.segmentation_id_mapping = {}
         self.instance_to_id = {}
-        self.segmentation_robot_id = None
+        self.robot_segmentation_ids = frozenset()
         super().__init__(**kwargs)
 
     def step(self, action):
         return self.env.step(action)
 
     def reset(self):
-        obs = self.env.reset()
+        obs = super().reset()
         self.segmentation_id_mapping = {}
-        self.segmentation_robot_id = None
+        self.robot_segmentation_ids = frozenset()
 
         robot_instance_names = set()
         for idx, robot in enumerate(self.env.robots):
@@ -202,15 +208,22 @@ class SegmentationRenderEnv(OffScreenRenderEnv):
             for arm, gripper in robot.gripper.items():
                 robot_instance_names.add(f"{type(gripper).__name__}{idx}_{arm}")
 
-        # get_segmentation_instances() treats everything from segmentation_robot_id
-        # onward as robot, so this must be the lowest id among the robot's instances
-        for i, instance_name in enumerate(list(self.env.model.instances_to_ids.keys())):
-            if instance_name in robot_instance_names and (
-                self.segmentation_robot_id is None or i < self.segmentation_robot_id
-            ):
-                self.segmentation_robot_id = i
+        instance_names = list(self.env.model.instances_to_ids.keys())
+        robot_instances = {
+            i + 1
+            for i, instance_name in enumerate(instance_names)
+            if instance_name in robot_instance_names
+        }
+        if not robot_instances:
+            raise RuntimeError(
+                "Could not identify robot instance IDs for segmentation. "
+                f"Expected one of {sorted(robot_instance_names)}, but the "
+                "model exposes "
+                f"{instance_names}."
+            )
+        self.robot_segmentation_ids = frozenset(robot_instances)
 
-        for i, instance_name in enumerate(list(self.env.model.instances_to_ids.keys())):
+        for i, instance_name in enumerate(instance_names):
             if instance_name not in robot_instance_names:
                 self.segmentation_id_mapping[i] = instance_name
 
@@ -222,29 +235,47 @@ class SegmentationRenderEnv(OffScreenRenderEnv):
     def get_segmentation_instances(self, segmentation_image):
         # get all instances' segmentation separately
         seg_img_dict = {}
-        segmentation_image[segmentation_image > self.segmentation_robot_id] = (
-            self.segmentation_robot_id + 1
-        )
-        seg_img_dict["robot"] = segmentation_image * (
-            segmentation_image == self.segmentation_robot_id + 1
-        )
+        robot_mask = np.isin(segmentation_image, tuple(self.robot_segmentation_ids))
+        seg_img_dict["robot"] = segmentation_image * robot_mask
+
+        self._validate_segmentation_ids(segmentation_image)
 
         for seg_id, instance_name in self.segmentation_id_mapping.items():
+            instance_id = seg_id + 1
             seg_img_dict[instance_name] = segmentation_image * (
-                segmentation_image == seg_id + 1
+                segmentation_image == instance_id
             )
         return seg_img_dict
+
+    def _validate_segmentation_ids(self, segmentation_image):
+        known_ids = {0, *self.robot_segmentation_ids, *self.instance_to_id.values()}
+        unknown_ids = np.setdiff1d(np.unique(segmentation_image), list(known_ids))
+        if unknown_ids.size:
+            raise ValueError(
+                "Received segmentation IDs absent from the current model mapping: "
+                f"{unknown_ids.tolist()}. Known robot IDs: "
+                f"{sorted(self.robot_segmentation_ids)}."
+            )
 
     def get_segmentation_of_interest(self, segmentation_image):
         # get the combined segmentation of obj of interest
         # 1 for obj_of_interest
         # -1.0 for robot
         # 0 for other things
+        missing_objects = [
+            obj for obj in self.obj_of_interest if obj not in self.instance_to_id
+        ]
+        if missing_objects:
+            raise KeyError(
+                "Objects of interest are missing from the segmentation mapping: "
+                f"{missing_objects}. Available instances: "
+                f"{sorted(self.instance_to_id)}."
+            )
+        self._validate_segmentation_ids(segmentation_image)
         ret_seg = np.zeros_like(segmentation_image)
         for obj in self.obj_of_interest:
             ret_seg[segmentation_image == self.instance_to_id[obj]] = 1.0
-        # ret_seg[segmentation_image == self.segmentation_robot_id+1] = -1.0
-        ret_seg[segmentation_image == 0] = -1.0
+        ret_seg[np.isin(segmentation_image, tuple(self.robot_segmentation_ids))] = -1.0
         return ret_seg
 
     def segmentation_to_rgb(self, seg_im, random_colors=False):
@@ -257,10 +288,10 @@ class SegmentationRenderEnv(OffScreenRenderEnv):
         seg_im = np.mod(seg_im, 256)
 
         if random_colors:
-            colors = randomize_colors(N=256, bright=True)
+            colors = randomize_colors(256, bright=True)
             return (255.0 * colors[seg_im]).astype(np.uint8)
         else:
-            # deterministic shuffling of values to map each geom ID to a random int in [0, 255]
+            # Deterministically map each geom ID to a value in [0, 255].
             rstate = np.random.RandomState(seed=2)
             inds = np.arange(256)
             rstate.shuffle(inds)
