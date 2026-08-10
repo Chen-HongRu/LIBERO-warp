@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tomllib
+import zipfile
 from importlib.metadata import distribution
 from pathlib import Path
 
@@ -49,6 +50,7 @@ def test_console_entrypoints_are_declared_in_the_packaged_source_tree() -> None:
 
     assert project["tool"]["setuptools"]["packages"]["find"]["include"] == [
         "benchmark_scripts*",
+        "benchmarks*",
         "libero*",
         "scripts*",
     ]
@@ -66,6 +68,61 @@ def test_console_entrypoints_are_declared_in_the_packaged_source_tree() -> None:
             and node.name == callable_name
             for node in module.body
         ), f"{target} must target a module-level callable"
+
+
+@pytest.mark.static
+def test_wheel_contains_and_imports_runtime_benchmark_modules(tmp_path: Path) -> None:
+    """Runtime's ``benchmarks.ctrl_trace`` import must work outside the source tree."""
+
+    wheel_directory = tmp_path / "wheel"
+    build = subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(wheel_directory)],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=120,
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+    wheels = tuple(wheel_directory.glob("libero_warp-*.whl"))
+    assert len(wheels) == 1
+    wheel = wheels[0]
+
+    expected_paths = {
+        "benchmarks/__init__.py",
+        "benchmarks/ctrl_trace.py",
+        "benchmarks/compare_m1_reports.py",
+        "benchmarks/benchmark_warp_spike.py",
+        "benchmarks/benchmark_official_spike.py",
+    }
+    with zipfile.ZipFile(wheel) as archive:
+        assert expected_paths <= set(archive.namelist())
+
+    environment = _isolated_cli_environment(tmp_path)
+    environment["PYTHONPATH"] = str(wheel)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import benchmarks.benchmark_official_spike as official; "
+                "import benchmarks.benchmark_warp_spike as warp; "
+                "import benchmarks.compare_m1_reports as compare; "
+                "import benchmarks.ctrl_trace as trace; "
+                "assert '.whl/' in official.__file__; "
+                "assert '.whl/' in warp.__file__; "
+                "assert '.whl/' in compare.__file__; "
+                "assert '.whl/' in trace.__file__"
+            ),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.static

@@ -51,7 +51,7 @@ teleop = ["hidapi>=0.14"]
 "libero.download_datasets" = "benchmark_scripts.download_libero_datasets:main"
 
 [tool.setuptools.packages.find]
-include = ["benchmark_scripts*", "libero*", "scripts*"]
+include = ["benchmark_scripts*", "benchmarks*", "libero*", "scripts*"]
 
 [tool.setuptools.package-data]
 libero = ["templates/*"]

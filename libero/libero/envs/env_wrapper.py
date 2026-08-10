@@ -57,6 +57,18 @@ class ControlEnv:
             f"[error] {bddl_file_name} does not exist!"
         )
 
+        # LIBERO's legacy BDDL placement samplers use ``numpy.random``'s
+        # process-global RandomState, while robosuite 1.5.2 owns a separate
+        # Generator. Scope a saved global state to this wrapper so a seeded
+        # environment is deterministic without leaking its seed to callers or
+        # to other environments.
+        seed = kwargs.get("seed")
+        self._legacy_rng_state = None
+        caller_rng_state = None
+        if seed is not None:
+            caller_rng_state = np.random.get_state()
+            np.random.seed(seed)
+
         controller_configs = suite.load_part_controller_config(
             default_controller=controller
         )
@@ -69,32 +81,37 @@ class ControlEnv:
         self.problem_name = problem_info["problem_name"]
         self.domain_name = problem_info["domain_name"]
         self.language_instruction = problem_info["language_instruction"]
-        self.env = TASK_MAPPING[self.problem_name](
-            bddl_file_name,
-            robots=robots,
-            controller_configs=controller_configs,
-            gripper_types=gripper_types,
-            initialization_noise=initialization_noise,
-            use_camera_obs=use_camera_obs,
-            has_renderer=has_renderer,
-            has_offscreen_renderer=has_offscreen_renderer,
-            render_camera=render_camera,
-            render_collision_mesh=render_collision_mesh,
-            render_visual_mesh=render_visual_mesh,
-            render_gpu_device_id=render_gpu_device_id,
-            control_freq=control_freq,
-            horizon=horizon,
-            ignore_done=ignore_done,
-            hard_reset=hard_reset,
-            camera_names=camera_names,
-            camera_heights=camera_heights,
-            camera_widths=camera_widths,
-            camera_depths=camera_depths,
-            camera_segmentations=camera_segmentations,
-            renderer=renderer,
-            renderer_config=renderer_config,
-            **kwargs,
-        )
+        try:
+            self.env = TASK_MAPPING[self.problem_name](
+                bddl_file_name,
+                robots=robots,
+                controller_configs=controller_configs,
+                gripper_types=gripper_types,
+                initialization_noise=initialization_noise,
+                use_camera_obs=use_camera_obs,
+                has_renderer=has_renderer,
+                has_offscreen_renderer=has_offscreen_renderer,
+                render_camera=render_camera,
+                render_collision_mesh=render_collision_mesh,
+                render_visual_mesh=render_visual_mesh,
+                render_gpu_device_id=render_gpu_device_id,
+                control_freq=control_freq,
+                horizon=horizon,
+                ignore_done=ignore_done,
+                hard_reset=hard_reset,
+                camera_names=camera_names,
+                camera_heights=camera_heights,
+                camera_widths=camera_widths,
+                camera_depths=camera_depths,
+                camera_segmentations=camera_segmentations,
+                renderer=renderer,
+                renderer_config=renderer_config,
+                **kwargs,
+            )
+        finally:
+            if caller_rng_state is not None:
+                self._legacy_rng_state = np.random.get_state()
+                np.random.set_state(caller_rng_state)
 
     @property
     def obj_of_interest(self):
@@ -106,7 +123,7 @@ class ControlEnv:
     def reset(self):
         while True:
             try:
-                return self.env.reset()
+                return self._reset_with_legacy_rng()
             except RandomizationError:
                 continue
 
@@ -141,7 +158,37 @@ class ControlEnv:
         self.env.reset_from_xml_string(xml_string)
 
     def seed(self, seed):
-        self.env.seed(seed)
+        """Reset the robosuite 1.5.2 environment RNG to ``seed``.
+
+        In robosuite 1.5.2, ``MujocoEnv.seed`` is a numeric instance
+        attribute set during construction rather than a callable API. Keep
+        this legacy wrapper usable without treating that attribute as a
+        method.
+        """
+        self.env.seed = seed
+        self.env.rng = np.random.default_rng(seed)
+        if seed is None:
+            self._legacy_rng_state = None
+            return
+        caller_rng_state = np.random.get_state()
+        try:
+            np.random.seed(seed)
+            self._legacy_rng_state = np.random.get_state()
+        finally:
+            np.random.set_state(caller_rng_state)
+
+    def _reset_with_legacy_rng(self):
+        """Reset with this environment's saved BDDL placement RNG state."""
+        legacy_rng_state = getattr(self, "_legacy_rng_state", None)
+        if legacy_rng_state is None:
+            return self.env.reset()
+        caller_rng_state = np.random.get_state()
+        np.random.set_state(legacy_rng_state)
+        try:
+            return self.env.reset()
+        finally:
+            self._legacy_rng_state = np.random.get_state()
+            np.random.set_state(caller_rng_state)
 
     def set_init_state(self, init_state):
         return self.regenerate_obs_from_state(init_state)

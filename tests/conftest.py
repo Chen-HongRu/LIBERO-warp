@@ -48,6 +48,9 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "nightly: requires LIBERO_RUN_NIGHTLY=1 and optional local test data"
     )
+    config.addinivalue_line(
+        "markers", "warp_gpu: requires LIBERO_RUN_WARP_GPU=1 and a CUDA MJWarp host"
+    )
 
 
 def pytest_collection_modifyitems(
@@ -57,6 +60,7 @@ def pytest_collection_modifyitems(
 
     run_integration = os.environ.get("LIBERO_RUN_OFFICIAL_INTEGRATION") == "1"
     run_nightly = os.environ.get("LIBERO_RUN_NIGHTLY") == "1"
+    run_warp_gpu = os.environ.get("LIBERO_RUN_WARP_GPU") == "1"
     integration_skip = pytest.mark.skip(
         reason=(
             "official MuJoCo integration is opt-in; set "
@@ -66,9 +70,14 @@ def pytest_collection_modifyitems(
     nightly_skip = pytest.mark.skip(
         reason="nightly coverage is opt-in; set LIBERO_RUN_NIGHTLY=1",
     )
+    warp_gpu_skip = pytest.mark.skip(
+        reason="MJWarp GPU coverage is opt-in; set LIBERO_RUN_WARP_GPU=1 on CUDA",
+    )
 
     for item in items:
-        if "nightly" in item.keywords and not run_nightly:
+        if "warp_gpu" in item.keywords and not run_warp_gpu:
+            item.add_marker(warp_gpu_skip)
+        elif "nightly" in item.keywords and not run_nightly:
             item.add_marker(nightly_skip)
         elif "official_integration" in item.keywords and not run_integration:
             item.add_marker(integration_skip)
