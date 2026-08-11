@@ -162,6 +162,9 @@ jobs:
       (inputs.qualification_suite == 'legacy' ||
       inputs.qualification_suite == 'all'))
     runs-on: ubuntu-latest
+    env:
+      LIBERO_CONFIG_PATH: ${{ github.workspace }}/.ci-libero-config
+      MUJOCO_GL: osmesa
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -169,6 +172,19 @@ jobs:
           python-version: '3.12'
           enable-cache: true
           cache-dependency-glob: uv.lock
+      - name: Install Mesa software renderer
+        run: sudo apt-get update && sudo apt-get install --yes libgl1-mesa-dri libosmesa6
+      - name: Configure non-interactive LIBERO paths
+        shell: bash
+        run: |
+          mkdir -p "$LIBERO_CONFIG_PATH"
+          printf '%s\n' \
+            "benchmark_root: $GITHUB_WORKSPACE/libero/libero" \
+            "bddl_files: $GITHUB_WORKSPACE/libero/libero/bddl_files" \
+            "init_states: $GITHUB_WORKSPACE/libero/libero/init_files" \
+            "datasets: $RUNNER_TEMP/datasets" \
+            "assets: $GITHUB_WORKSPACE/libero/libero/assets" \
+            > "$LIBERO_CONFIG_PATH/config.yaml"
       - name: Install locked legacy profile
         run: uv sync --locked --extra legacy --group dev
       - name: Import every frozen legacy module and CLI target
