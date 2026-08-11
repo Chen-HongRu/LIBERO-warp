@@ -499,12 +499,13 @@ The robosuite task remains authoritative for cameras, state, predicates, and
 controller state. Local Python 3.12 evidence passes the 8 static G1 wrapper tests,
 15 migration/MuJoCo compatibility tests, and the real headless official golden.
 
-## 11. G3 first runnable Warp slice
+## 11. G3 Warp N=1 reset/render/state compatibility
 
-The first G3 slice is runnable but does not yet claim the complete G3 hard gate.
-`make_env(EnvConfig(..., backend="warp", num_worlds=1))` now constructs a
-`WarpBatchEnv` backed by the existing exact `TaskCompiler` and `MJWarpSpike`.
-It provides:
+The G3 reset/render/state gate is complete for the approved personal-use path.
+`make_env(EnvConfig(..., backend="warp", num_worlds=1))` constructs a
+`WarpBatchEnv` backed by the exact `TaskCompiler` and `MJWarpSpike`. In addition,
+`OffScreenRenderEnv(..., backend="warp")` constructs a `WarpLiberoSession` and
+preserves the original single-environment NumPy observation-dict API. G3 provides:
 
 - trusted default reset and arbitrary finite flattened FULLPHYSICS reset for
   world zero;
@@ -512,34 +513,49 @@ It provides:
   and optional segmentation;
 - CUDA `ObservationBatch` outputs for visuals, reset-boundary proprioception,
   FULLPHYSICS state, and simulator time;
+- original unbatched NumPy RGB/depth/segmentation and all reset-synchronized
+  robosuite/LIBERO observable keys through `ControlEnv`;
+- reset-synchronized original predicate evaluation and the legacy flattened
+  state read/write roundtrip;
 - state and render-exact snapshot reads;
 - idempotent close and explicit closed-object failures;
-- a clear `NotImplementedError` for policy `step()` until Warp `OSC_POSE` exists.
+- clear capability errors for policy `step()`, XML reset, and post-construction
+  reseeding until their later milestones.
 
-There is no official physics or rendering fallback in the returned observation.
-The official compiler-owned task is used only at reset to obtain authoritative
-controller-derived proprioception, which cannot be reconstructed from MuJoCo
-qpos/qvel alone.
+There is no official physics or rendering fallback in returned visuals or state.
+The exact compiler-owned official task is explicitly retained as a CPU shadow at
+reset/state-write boundaries for controller-derived proprioception, nonvisual
+observables, and original task predicates. That correctness-first synchronization
+is outside the native tensor path, is not called by a Warp physics step, and is
+recorded rather than presented as a device-native observation/predicate engine.
 
 AutoDL smoke evidence used an RTX 4090 D with the server's existing
 Torch 2.13.0+cu130 / CUDA 13 stack plus isolated MuJoCo 3.11.0,
-mujoco-warp 3.11.0, Warp 1.16.0, and robosuite 1.5.2. The public GPU test passed
-in 14.79 seconds after the one-time Warp kernel cache was populated. It exercised
-three unequal-resolution cameras, RGB, depth, instance segmentation, two trusted
-resets, state/proprio/time reads, snapshot, step rejection, and repeated close.
-All returned observation tensors were finite and on `cuda:0`.
+mujoco-warp 3.11.0, Warp 1.16.0, and robosuite 1.5.2. The consolidated G3 group
+passed `7/7` in 51.56 seconds after the one-time Warp kernel cache was populated.
+It covers:
+
+- tensor and legacy NumPy/dict entry points;
+- arbitrary ordered unequal-resolution cameras, metric and normalized depth,
+  and instance/class/element segmentation;
+- the pilot plus representative `libero_object`, `libero_goal`, and `libero_10`
+  tasks, spanning different scenes and objects;
+- exact float32 reset-state comparison with the synchronized official task and
+  predicate agreement;
+- an official-vs-Warp camera oracle with correct RGB orientation, target
+  keypoint error at most one pixel, target silhouette IoU at least 0.95, and
+  MuJoCo CPU-ray versus Warp metric-depth error within 5 mm;
+- three repeated construct/reset/close lifecycles with less than 64 MiB retained
+  free-memory drift relative to the first closed lifecycle;
+- explicit action/XML/seed failure and idempotent close behavior.
 
 The project runtime remains qualified on Python 3.12 by the G1 workflow; this
 fast GPU smoke reused the available Python 3.10 CUDA environment and is recorded
 as such rather than presented as a second Python qualification.
 
 The regenerated schema-v2 manifest SHA-256 is
-`5800c24670d2ff01cd484ed30021f9dc9f195f5b04083517e71d3d8e0100990e`.
+`5b29d9267fe0c8f3d56063790cfe83db0c3f2f0599bfc1e32ec59ec00d89d9e5`.
 
-Still required before declaring the full G3 gate complete:
-
-- official-vs-Warp reset/state/camera oracle coverage across representative
-  suites, scenes, objects, and segmentation modes;
-- predicate/minimal task readout;
-- the original `ControlEnv` observation-dict compatibility surface;
-- repeated-construction resource-growth evidence.
+G4 remains responsible for the real 7-D `OSC_POSE` action path. G5 remains
+responsible for device-native full observable cadence, formal private `sim`
+proxy behavior, `DemoRenderEnv`, and complete downstream drop-in qualification.

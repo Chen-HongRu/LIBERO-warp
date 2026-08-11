@@ -48,6 +48,7 @@ class WarpBatchEnv:
         self.config = config
         self._closed = False
         self._last_proprio: torch.Tensor | None = None
+        self._last_observation: ObservationBatch | None = None
         compiled = TaskCompiler().compile(config)
         spike: MJWarpSpike | None = None
         try:
@@ -101,7 +102,8 @@ class WarpBatchEnv:
         self._last_proprio = official_observation.proprio.to(
             device=self.device, dtype=torch.float32
         )
-        return self._make_observation()
+        self._last_observation = self._make_observation()
+        return self._last_observation
 
     def step(self, actions: torch.Tensor | np.ndarray) -> StepBatch:
         """Reject policy actions until the Warp OSC controller is implemented."""
@@ -136,12 +138,60 @@ class WarpBatchEnv:
             state=self.get_state().clone(), sim_time=self.get_sim_time().clone()
         )
 
+    def legacy_observation(self) -> dict[str, np.ndarray]:
+        """Synchronize the latest reset observation to the legacy NumPy dict.
+
+        Warp is authoritative for every returned visual. The compiler-owned
+        official shadow contributes controller/task observables that G3 does not
+        yet derive on CUDA. This explicit compatibility conversion is outside
+        the native tensor path and never runs during a Warp physics step.
+        """
+        self._ensure_open()
+        if self._last_observation is None:
+            raise RuntimeError("Call reset() before requesting a legacy observation.")
+        official_env = self._spike.compiled.official_env
+        raw_observation = official_env._last_raw_observation
+        if raw_observation is None:
+            raise RuntimeError("The official reset shadow has no observation.")
+        legacy = {
+            key: np.array(value, copy=True) for key, value in raw_observation.items()
+        }
+        for camera in self.config.cameras:
+            legacy[f"{camera.name}_image"] = self._legacy_visual(
+                self._last_observation.rgb[camera.name]
+            )
+            if camera.depth:
+                metric_depth = self._legacy_visual(
+                    self._last_observation.depth[camera.name]
+                )
+                legacy[f"{camera.name}_depth"] = self._normalized_depth(metric_depth)
+            if camera.segmentation is not None:
+                key = f"{camera.name}_segmentation_{camera.segmentation}"
+                legacy[key] = self._legacy_visual(
+                    self._last_observation.segmentation[camera.name]
+                )
+        return legacy
+
+    def check_success(self) -> bool:
+        """Evaluate the original predicate on the reset-synchronized CPU shadow."""
+        self._ensure_open()
+        if self._last_observation is None:
+            raise RuntimeError("Call reset() before requesting task success.")
+        return bool(self._spike.compiled.official_env._env.check_success())
+
+    @property
+    def shadow_task(self) -> Any:
+        """Return the reset-synchronized official task used for legacy reads."""
+        self._ensure_open()
+        return self._spike.compiled.official_env._env.env
+
     def close(self) -> None:
         """Idempotently release CUDA, renderer, and compiler-owned resources."""
         if self._closed:
             return
         self._closed = True
         self._last_proprio = None
+        self._last_observation = None
         self._spike.close()
 
     def _make_observation(self) -> ObservationBatch:
@@ -188,6 +238,22 @@ class WarpBatchEnv:
                 f"init_state must contain {expected_width} values; got {value.numel()}."
             )
         return value.contiguous()
+
+    def _legacy_visual(self, tensor: torch.Tensor) -> np.ndarray:
+        value = tensor[0].detach().to(device="cpu").numpy()
+        source_convention = self._spike.compiled.official_env.source_image_convention
+        if source_convention == "opengl":
+            value = value[::-1]
+        return np.ascontiguousarray(value)
+
+    def _normalized_depth(self, metric_depth: np.ndarray) -> np.ndarray:
+        model = self._spike.compiled.model
+        extent = float(model.stat.extent)
+        near = float(model.vis.map.znear) * extent
+        far = float(model.vis.map.zfar) * extent
+        with np.errstate(divide="ignore", invalid="ignore"):
+            normalized = (1.0 - near / metric_depth) / (1.0 - near / far)
+        return np.clip(normalized, 0.0, 1.0).astype(np.float32, copy=False)
 
     @staticmethod
     def _validate_world_ids(

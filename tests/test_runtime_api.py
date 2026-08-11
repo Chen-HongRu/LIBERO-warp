@@ -12,6 +12,7 @@ from dataclasses import fields
 from types import ModuleType
 from typing import get_type_hints
 
+import numpy as np
 import pytest
 import torch
 
@@ -248,7 +249,6 @@ def test_env_config_rejects_the_removed_libero_100_aggregate_suite() -> None:
 
 @pytest.mark.official_integration
 def test_official_runtime_pilot_observation_and_boundary_contract() -> None:
-    import numpy as np
     import torch
 
     CameraConfig, EnvConfig, ObservationBatch, StepBatch, make_env = _runtime_api()
@@ -497,3 +497,262 @@ def test_warp_runtime_n1_reset_render_state_and_close_contract() -> None:
         env.close()
     with pytest.raises(RuntimeError, match="closed"):
         env.get_state()
+
+
+@pytest.mark.warp_gpu
+def test_legacy_offscreen_env_warp_reset_numpy_dict_and_capabilities() -> None:
+    """Keep the original single-env reset/state API while Warp owns visuals."""
+    if not torch.cuda.is_available():
+        pytest.fail("LIBERO_RUN_WARP_GPU=1 was set, but CUDA is unavailable")
+    from libero.libero.envs import OffScreenRenderEnv, UnsupportedBackendOperation
+
+    task_name = LIBERO_TASK_MAP["libero_spatial"][0]
+    bddl_path = BENCHMARK_ROOT / "bddl_files" / "libero_spatial" / f"{task_name}.bddl"
+    env = OffScreenRenderEnv(
+        bddl_file_name=str(bddl_path),
+        backend="warp",
+        camera_names=["agentview", "robot0_eye_in_hand", "sideview"],
+        camera_heights=[48, 32, 24],
+        camera_widths=[64, 40, 36],
+        camera_depths=[False, True, False],
+        camera_segmentations=[None, None, "instance"],
+        seed=0,
+    )
+    try:
+        assert env.backend_info.actual_backend == "warp"
+        assert env.backend_info.selection_source == "constructor"
+        assert env.backend_info.device == {
+            "compute": "cuda:0",
+            "physics": "mujoco-warp",
+            "render": "cuda:0",
+        }
+        assert "step_osc_pose_7d" not in env.backend_info.capabilities
+        observation = env.reset()
+        assert isinstance(observation, dict)
+        expected_visuals = {
+            "agentview_image": ((48, 64, 3), np.uint8),
+            "robot0_eye_in_hand_image": ((32, 40, 3), np.uint8),
+            "robot0_eye_in_hand_depth": ((32, 40, 1), np.float32),
+            "sideview_image": ((24, 36, 3), np.uint8),
+            "sideview_segmentation_instance": ((24, 36, 1), np.int32),
+        }
+        for key, (shape, dtype) in expected_visuals.items():
+            assert observation[key].shape == shape
+            assert observation[key].dtype == dtype
+            assert np.isfinite(observation[key]).all()
+        assert "robot0_proprio-state" in observation
+        assert np.isfinite(observation["robot0_proprio-state"]).all()
+        state = env.get_sim_state()
+        assert state.ndim == 1
+        assert state.dtype == np.float64
+        assert np.isfinite(state).all()
+        restored = env.set_init_state(state)
+        assert isinstance(restored, dict)
+        np.testing.assert_allclose(env.get_sim_state(), state, rtol=0.0, atol=0.0)
+        assert env.check_success() is bool(env.env._check_success())
+        with pytest.raises(UnsupportedBackendOperation, match="step_osc_pose_7d"):
+            env.step(np.zeros(7, dtype=np.float32))
+        with pytest.raises(UnsupportedBackendOperation, match="model_xml_reset"):
+            env.reset_from_xml_string(env.sim.model.get_xml())
+    finally:
+        env.close()
+
+
+@pytest.mark.warp_gpu
+@pytest.mark.parametrize(
+    ("suite", "camera"),
+    (
+        ("libero_object", ("agentview", 21, 35, False, "class")),
+        ("libero_goal", ("sideview", 27, 31, True, "element")),
+        ("libero_10", ("robot0_eye_in_hand", 25, 29, True, None)),
+    ),
+)
+def test_warp_reset_oracle_spans_suites_scenes_and_camera_modalities(
+    suite: str,
+    camera: tuple[str, int, int, bool, str | None],
+) -> None:
+    """Compile representative non-pilot tasks without fixed camera assumptions."""
+    if not torch.cuda.is_available():
+        pytest.fail("LIBERO_RUN_WARP_GPU=1 was set, but CUDA is unavailable")
+    CameraConfig, EnvConfig, *_, make_env = _runtime_api()
+    name, height, width, depth, segmentation = camera
+    env = make_env(
+        EnvConfig(
+            suite=suite,
+            task_index=0,
+            cameras=(
+                CameraConfig(
+                    name,
+                    height,
+                    width,
+                    depth=depth,
+                    segmentation=segmentation,
+                ),
+            ),
+            backend="warp",
+            num_worlds=1,
+            seed=11,
+        )
+    )
+    try:
+        observation = env.reset()
+        assert observation.rgb[name].shape == (1, height, width, 3)
+        assert observation.rgb[name].dtype == torch.uint8
+        if depth:
+            assert observation.depth[name].shape == (1, height, width, 1)
+            assert observation.depth[name].dtype == torch.float32
+        else:
+            assert name not in observation.depth
+        if segmentation is not None:
+            assert observation.segmentation[name].shape == (1, height, width, 1)
+            assert observation.segmentation[name].dtype == torch.int32
+        else:
+            assert name not in observation.segmentation
+
+        official = env._spike.compiled.official_env
+        official_state = official.get_state().to(env.device, dtype=torch.float32)
+        torch.testing.assert_close(
+            observation.state, official_state, rtol=0.0, atol=0.0
+        )
+        assert env.check_success() is bool(official._env.check_success())
+        legacy = env.legacy_observation()
+        assert legacy[f"{name}_image"].shape == (height, width, 3)
+        assert legacy[f"{name}_image"].dtype == np.uint8
+        if depth:
+            normalized_depth = legacy[f"{name}_depth"]
+            assert normalized_depth.shape == (height, width, 1)
+            assert normalized_depth.dtype == np.float32
+            assert np.all((0.0 <= normalized_depth) & (normalized_depth <= 1.0))
+        if segmentation is not None:
+            legacy_segmentation = legacy[f"{name}_segmentation_{segmentation}"]
+            assert legacy_segmentation.shape == (height, width, 1)
+            assert legacy_segmentation.dtype == np.int32
+    finally:
+        env.close()
+
+
+@pytest.mark.warp_gpu
+def test_warp_repeated_construct_close_has_bounded_cuda_memory_growth() -> None:
+    """Three identical lifecycles must not retain one model per construction."""
+    if not torch.cuda.is_available():
+        pytest.fail("LIBERO_RUN_WARP_GPU=1 was set, but CUDA is unavailable")
+    import gc
+
+    CameraConfig, EnvConfig, *_, make_env = _runtime_api()
+    config = EnvConfig(
+        suite="libero_spatial",
+        task_index=0,
+        cameras=(CameraConfig("agentview", 20, 28),),
+        backend="warp",
+        num_worlds=1,
+        seed=0,
+    )
+    free_after_close = []
+    for _ in range(3):
+        env = make_env(config)
+        try:
+            observation = env.reset()
+            assert observation.rgb["agentview"].is_cuda
+        finally:
+            env.close()
+        del env
+        gc.collect()
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        free_after_close.append(torch.cuda.mem_get_info()[0])
+
+    # Warp and CUDA may retain reusable module/mempool pages after the first
+    # lifecycle. Repeating the identical lifecycle must not retain another full
+    # model/renderer allocation each time.
+    assert free_after_close[-1] >= free_after_close[0] - 64 * 1024 * 1024
+
+
+@pytest.mark.warp_gpu
+def test_warp_runtime_camera_geometry_depth_and_segmentation_oracle() -> None:
+    """Compare the public G3 renderer with official MuJoCo and CPU ray oracles."""
+    if not torch.cuda.is_available():
+        pytest.fail("LIBERO_RUN_WARP_GPU=1 was set, but CUDA is unavailable")
+    from types import SimpleNamespace
+
+    from .test_mjwarp_gpu_parity import (
+        MAX_TARGET_DEPTH_ABS_ERROR_METERS,
+        PILOT_TARGET_GEOM,
+        _official_camera_reference,
+        _official_target_ray_depth,
+        _require_official_visible_geom_groups,
+        _rgb_orientation_errors,
+        _target_keypoint_error,
+        _target_metric_depth_max_abs_error,
+        _target_silhouette_iou,
+    )
+
+    CameraConfig, EnvConfig, *_, make_env = _runtime_api()
+    cameras = (CameraConfig("agentview", 64, 64, depth=True, segmentation="element"),)
+    env = make_env(
+        EnvConfig(
+            suite="libero_spatial",
+            task_index=0,
+            cameras=cameras,
+            backend="warp",
+            num_worlds=1,
+            seed=0,
+        )
+    )
+    try:
+        observation = env.reset()
+        compiled = env._spike.compiled
+        state = observation.state[0].detach().to(device="cpu").numpy()
+        state_reference = SimpleNamespace(initial_fullphysics=state)
+        official = _official_camera_reference(compiled, state_reference, cameras)
+        _require_official_visible_geom_groups(
+            compiled.official_env._env.sim._render_context_offscreen.vopt.geomgroup
+        )
+        target_geom_id = compiled.metadata.geom_ids[PILOT_TARGET_GEOM]
+        name = cameras[0].name
+        warp_rgb = observation.rgb[name]
+        warp_depth = observation.depth[name]
+        warp_segmentation = observation.segmentation[name]
+        direct_rgb_error, reversed_rgb_error = _rgb_orientation_errors(
+            official[name]["rgb"], warp_rgb
+        )
+        assert direct_rgb_error < reversed_rgb_error
+
+        official_target_mask = (
+            official[name]["segmentation"][0, ..., 0].numpy() == target_geom_id
+        )
+        assert int(official_target_mask.sum()) >= 4
+        keypoint_error = _target_keypoint_error(
+            official[name]["segmentation"][0],
+            warp_segmentation[0],
+            target_geom_id,
+        )
+        silhouette_iou = _target_silhouette_iou(
+            official[name]["segmentation"][0],
+            warp_segmentation[0],
+            target_geom_id,
+        )
+        assert keypoint_error <= 1.0
+        assert silhouette_iou >= 0.95
+
+        ray_depth = _official_target_ray_depth(
+            compiled,
+            state_reference,
+            cameras[0],
+            target_geom_id,
+            official_target_mask,
+        )
+        ray_depth_tensor = torch.from_numpy(ray_depth).unsqueeze(0).unsqueeze(-1)
+        target_mask = (
+            torch.from_numpy(official_target_mask)
+            .to(env.device)
+            .unsqueeze(0)
+            .unsqueeze(-1)
+        )
+        assert (
+            _target_metric_depth_max_abs_error(
+                ray_depth_tensor, warp_depth, target_mask
+            )
+            <= MAX_TARGET_DEPTH_ABS_ERROR_METERS
+        )
+    finally:
+        env.close()

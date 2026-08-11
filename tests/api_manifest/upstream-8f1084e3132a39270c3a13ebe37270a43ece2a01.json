@@ -1254,7 +1254,7 @@
       "python_requires": ">=3.12,<3.13",
       "version": "0.1.0"
     },
-    "head_commit": "cd819bd81678831b9839a37b5b5a765f193f191b",
+    "head_commit": "db567b568ee0afcd9b21aeed290926807b5bcc59",
     "modules": {
       "benchmark_scripts": {
         "declared_symbols": {},
@@ -8336,6 +8336,11 @@
             },
             "signature": "(self, *, task_factory, bddl_file_name, robots, controller, task_kwargs)"
           },
+          "Path": {
+            "kind": "symbol_import",
+            "origin_module": "pathlib",
+            "origin_name": "Path"
+          },
           "Protocol": {
             "kind": "symbol_import",
             "origin_module": "typing",
@@ -8395,6 +8400,11 @@
             },
             "signature": "(self, camera_segmentations='instance', camera_heights=128, camera_widths=128, **kwargs)"
           },
+          "Sequence": {
+            "kind": "symbol_import",
+            "origin_module": "collections.abc",
+            "origin_name": "Sequence"
+          },
           "TASK_MAPPING": {
             "kind": "symbol_import",
             "origin_module": "libero.libero.envs.bddl_base_domain",
@@ -8414,12 +8424,82 @@
             },
             "signature": "(self, *, operation: str, backend: str, capability: str, replacement: str) -> None"
           },
+          "WarpLiberoSession": {
+            "bases": [],
+            "kind": "class",
+            "members": {
+              "__init__": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, *, bddl_file_name, robots, controller, task_kwargs, requested_backend, selection_source)"
+              },
+              "_reset_with_legacy_rng": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "check_success": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "close": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "get_sim_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "regenerate_obs_from_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, mujoco_state)"
+              },
+              "reset": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "reset_from_xml_string": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, xml_string)"
+              },
+              "seed": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, seed)"
+              },
+              "set_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, mujoco_state)"
+              },
+              "step": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, action)"
+              }
+            },
+            "signature": "(self, *, bddl_file_name, robots, controller, task_kwargs, requested_backend, selection_source)"
+          },
           "_BACKEND_ENVIRONMENT_VARIABLE": {
             "kind": "assignment",
             "value": "LIBERO_SIM_BACKEND"
           },
           "_OFFICIAL_CAPABILITIES": {
             "kind": "assignment"
+          },
+          "_WARP_G3_CAPABILITIES": {
+            "kind": "assignment"
+          },
+          "_canonical_task_identity": {
+            "decorators": [],
+            "kind": "function",
+            "signature": "(bddl_file_name: str) -> tuple[str, int]"
           },
           "_dependency_versions": {
             "decorators": [],
@@ -8441,10 +8521,25 @@
             "kind": "function",
             "signature": "(*, render_gpu_device_id: int, rendering_enabled: bool) -> str"
           },
+          "_per_camera_values": {
+            "decorators": [],
+            "kind": "function",
+            "signature": "(value, *, count: int, name: str) -> list[Any]"
+          },
           "_resolve_backend": {
             "decorators": [],
             "kind": "function",
             "signature": "(backend: str | None) -> tuple[str, str]"
+          },
+          "_warp_backend_info": {
+            "decorators": [],
+            "kind": "function",
+            "signature": "(*, requested_backend: str, selection_source: str, device: str) -> BackendInfo"
+          },
+          "_warp_camera_configs": {
+            "decorators": [],
+            "kind": "function",
+            "signature": "(task_kwargs: Mapping[str, Any])"
           },
           "cm": {
             "kind": "module_import",
@@ -8466,6 +8561,11 @@
           "importlib": {
             "kind": "module_import",
             "origin_module": "importlib.metadata"
+          },
+          "libero_task_map": {
+            "kind": "symbol_import",
+            "origin_module": "libero.libero.benchmark.libero_suite_task_map",
+            "origin_name": "libero_task_map"
           },
           "np": {
             "kind": "module_import",
@@ -8797,6 +8897,11 @@
             },
             "signature": "(self, *, task_factory, bddl_file_name, robots, controller, task_kwargs)"
           },
+          "Path": {
+            "kind": "symbol_import",
+            "origin_module": "pathlib",
+            "origin_name": "Path"
+          },
           "Protocol": {
             "kind": "symbol_import",
             "origin_module": "typing",
@@ -8856,6 +8961,11 @@
             },
             "signature": "(self, camera_segmentations='instance', camera_heights=128, camera_widths=128, **kwargs)"
           },
+          "Sequence": {
+            "kind": "symbol_import",
+            "origin_module": "collections.abc",
+            "origin_name": "Sequence"
+          },
           "TASK_MAPPING": {
             "kind": "assignment",
             "origin": "libero.libero.envs.bddl_base_domain:TASK_MAPPING"
@@ -8873,6 +8983,68 @@
               }
             },
             "signature": "(self, *, operation: str, backend: str, capability: str, replacement: str) -> None"
+          },
+          "WarpLiberoSession": {
+            "bases": [],
+            "kind": "class",
+            "members": {
+              "__init__": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, *, bddl_file_name, robots, controller, task_kwargs, requested_backend, selection_source)"
+              },
+              "_reset_with_legacy_rng": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "check_success": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "close": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "get_sim_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "regenerate_obs_from_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, mujoco_state)"
+              },
+              "reset": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "reset_from_xml_string": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, xml_string)"
+              },
+              "seed": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, seed)"
+              },
+              "set_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, mujoco_state)"
+              },
+              "step": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, action)"
+              }
+            },
+            "signature": "(self, *, bddl_file_name, robots, controller, task_kwargs, requested_backend, selection_source)"
           },
           "cm": {
             "kind": "module_import",
@@ -8894,6 +9066,10 @@
           "importlib": {
             "kind": "module_import",
             "origin_module": "importlib.metadata"
+          },
+          "libero_task_map": {
+            "kind": "assignment",
+            "origin": "libero.libero.benchmark.libero_suite_task_map:libero_task_map"
           },
           "np": {
             "kind": "module_import",
@@ -8928,7 +9104,7 @@
         },
         "is_package": false,
         "path": "libero/libero/envs/env_wrapper.py",
-        "sha256": "a4993d9ed7180ef267cdc7d4bec9c9c5f7068e9e0a71b44b7e58249e3ca0e1b2",
+        "sha256": "b713f0cb6758d03c6eacfcef4c864ca3b2cb4b9b068bb22508ea43a6f3b2545a",
         "star_imports": []
       },
       "libero.libero.envs.mujoco3_compat": {
@@ -32426,6 +32602,11 @@
                 "kind": "method",
                 "signature": "(self) -> None"
               },
+              "_legacy_visual": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, tensor: torch.Tensor) -> np.ndarray"
+              },
               "_make_observation": {
                 "decorators": [],
                 "kind": "method",
@@ -32436,12 +32617,22 @@
                 "kind": "method",
                 "signature": "(self, init_state: torch.Tensor | np.ndarray) -> torch.Tensor"
               },
+              "_normalized_depth": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, metric_depth: np.ndarray) -> np.ndarray"
+              },
               "_validate_world_ids": {
                 "decorators": [
                   "staticmethod"
                 ],
                 "kind": "method",
                 "signature": "(world_ids: Sequence[int] | np.ndarray | torch.Tensor | None) -> None"
+              },
+              "check_success": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> bool"
               },
               "close": {
                 "decorators": [],
@@ -32475,10 +32666,22 @@
                 "kind": "method",
                 "signature": "(self) -> torch.Tensor"
               },
+              "legacy_observation": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> dict[str, np.ndarray]"
+              },
               "reset": {
                 "decorators": [],
                 "kind": "method",
                 "signature": "(self, *, init_state: torch.Tensor | np.ndarray | None=None, world_ids: Sequence[int] | np.ndarray | torch.Tensor | None=None) -> ObservationBatch"
+              },
+              "shadow_task": {
+                "decorators": [
+                  "property"
+                ],
+                "kind": "method",
+                "signature": "(self) -> Any"
               },
               "step": {
                 "decorators": [],
@@ -32880,6 +33083,11 @@
                 "kind": "method",
                 "signature": "(self) -> None"
               },
+              "_legacy_visual": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, tensor: torch.Tensor) -> np.ndarray"
+              },
               "_make_observation": {
                 "decorators": [],
                 "kind": "method",
@@ -32890,12 +33098,22 @@
                 "kind": "method",
                 "signature": "(self, init_state: torch.Tensor | np.ndarray) -> torch.Tensor"
               },
+              "_normalized_depth": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, metric_depth: np.ndarray) -> np.ndarray"
+              },
               "_validate_world_ids": {
                 "decorators": [
                   "staticmethod"
                 ],
                 "kind": "method",
                 "signature": "(world_ids: Sequence[int] | np.ndarray | torch.Tensor | None) -> None"
+              },
+              "check_success": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> bool"
               },
               "close": {
                 "decorators": [],
@@ -32929,10 +33147,22 @@
                 "kind": "method",
                 "signature": "(self) -> torch.Tensor"
               },
+              "legacy_observation": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> dict[str, np.ndarray]"
+              },
               "reset": {
                 "decorators": [],
                 "kind": "method",
                 "signature": "(self, *, init_state: torch.Tensor | np.ndarray | None=None, world_ids: Sequence[int] | np.ndarray | torch.Tensor | None=None) -> ObservationBatch"
+              },
+              "shadow_task": {
+                "decorators": [
+                  "property"
+                ],
+                "kind": "method",
+                "signature": "(self) -> Any"
               },
               "step": {
                 "decorators": [],
@@ -32977,7 +33207,7 @@
         },
         "is_package": false,
         "path": "libero/libero/runtime/warp.py",
-        "sha256": "6b5a5037718b41aa300e1b518fadeaa0e5fef0c551eeb0a9c42e1738f3093904",
+        "sha256": "fe355767a6946e6c0e303ce2860028312c3d0526bf49aefd23e322402e2ed196",
         "star_imports": []
       },
       "libero.libero.utils": {

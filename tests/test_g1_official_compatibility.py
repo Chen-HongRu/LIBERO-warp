@@ -236,6 +236,33 @@ def test_backend_selection_precedence_and_fail_closed_behavior(
     fake_official_wrapper, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     env_wrapper, bddl_path = fake_official_wrapper
+
+    class FakeWarpSession:
+        constructed = []
+
+        def __init__(
+            self, *, requested_backend, selection_source, task_kwargs, **kwargs
+        ):
+            self.task = object()
+            self.closed = False
+            self.backend_info = env_wrapper.BackendInfo(
+                schema_version=1,
+                requested_backend=requested_backend,
+                selection_source=selection_source,
+                actual_backend="warp",
+                capabilities=frozenset({"reset", "single_env_numpy_api"}),
+                libero_warp_version=None,
+                libero_compat_target=env_wrapper.LIBERO_COMPAT_TARGET,
+                dependency_versions={},
+                device={"compute": "cuda:0", "physics": "mujoco-warp"},
+                build={},
+            )
+            self.constructed.append((kwargs, task_kwargs))
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(env_wrapper, "WarpLiberoSession", FakeWarpSession)
     monkeypatch.setenv("LIBERO_SIM_BACKEND", "official")
     from_environment = env_wrapper.ControlEnv(str(bddl_path))
     assert from_environment.backend_info.selection_source == "environment"
@@ -247,16 +274,17 @@ def test_backend_selection_precedence_and_fail_closed_behavior(
     explicit_official.close()
 
     constructed_before = len(_FakeOfficialTask.constructed)
-    with pytest.raises(
-        env_wrapper.UnsupportedBackendOperation,
-        match="backend 'warp'.*single_env_numpy_api",
-    ):
-        env_wrapper.ControlEnv(str(bddl_path))
+    from_warp_environment = env_wrapper.ControlEnv(str(bddl_path))
+    assert from_warp_environment.backend_info.actual_backend == "warp"
+    assert from_warp_environment.backend_info.selection_source == "environment"
     assert len(_FakeOfficialTask.constructed) == constructed_before
+    from_warp_environment.close()
 
     monkeypatch.setenv("LIBERO_SIM_BACKEND", "official")
-    with pytest.raises(env_wrapper.UnsupportedBackendOperation):
-        env_wrapper.ControlEnv(str(bddl_path), backend="warp")
+    explicit_warp = env_wrapper.ControlEnv(str(bddl_path), backend="warp")
+    assert explicit_warp.backend_info.actual_backend == "warp"
+    assert explicit_warp.backend_info.selection_source == "constructor"
+    explicit_warp.close()
     for invalid_backend in ("", "Official", "unknown"):
         with pytest.raises(ValueError, match="exactly 'official' or 'warp'"):
             env_wrapper.ControlEnv(str(bddl_path), backend=invalid_backend)

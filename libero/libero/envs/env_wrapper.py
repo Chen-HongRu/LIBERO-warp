@@ -3,8 +3,9 @@ import importlib.metadata
 import os
 import platform
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
 
@@ -18,6 +19,7 @@ from robosuite.controllers.composite.composite_controller_factory import (
 from robosuite.utils.errors import RandomizationError
 
 import libero.libero.envs.bddl_utils as BDDLUtils
+from libero.libero.benchmark.libero_suite_task_map import libero_task_map
 from libero.libero.envs.bddl_base_domain import TASK_MAPPING
 
 LIBERO_COMPAT_TARGET = "8f1084e3132a39270c3a13ebe37270a43ece2a01"
@@ -36,6 +38,18 @@ _OFFICIAL_CAPABILITIES = frozenset(
         "state_flattened_read",
         "state_flattened_write",
         "step_osc_pose_7d",
+    }
+)
+_WARP_G3_CAPABILITIES = frozenset(
+    {
+        "metric_depth",
+        "predicate_success",
+        "reset",
+        "rgb",
+        "segmentation",
+        "single_env_numpy_api",
+        "state_flattened_read",
+        "state_flattened_write",
     }
 )
 
@@ -131,13 +145,6 @@ def _resolve_backend(backend: str | None) -> tuple[str, str]:
             "backend must be exactly 'official' or 'warp'; "
             f"received {requested_backend!r} from {selection_source}"
         )
-    if requested_backend == "warp":
-        raise UnsupportedBackendOperation(
-            operation="construct ControlEnv",
-            backend="warp",
-            capability="single_env_numpy_api",
-            replacement='backend="official" until the G3 Warp compatibility slice',
-        )
     return requested_backend, selection_source
 
 
@@ -166,6 +173,42 @@ def _official_backend_info(
         build=MappingProxyType(
             {
                 "cuda": None,
+                "platform": platform.platform(),
+                "python": platform.python_version(),
+                "python_implementation": platform.python_implementation(),
+                "python_runtime": sys.implementation.name,
+            }
+        ),
+    )
+
+
+def _warp_backend_info(
+    *,
+    requested_backend: str,
+    selection_source: str,
+    device: str,
+) -> BackendInfo:
+    import torch
+
+    return BackendInfo(
+        schema_version=1,
+        requested_backend=requested_backend,
+        selection_source=selection_source,
+        actual_backend="warp",
+        capabilities=_WARP_G3_CAPABILITIES,
+        libero_warp_version=_distribution_version("libero-warp"),
+        libero_compat_target=LIBERO_COMPAT_TARGET,
+        dependency_versions=_dependency_versions(),
+        device=MappingProxyType(
+            {
+                "compute": device,
+                "physics": "mujoco-warp",
+                "render": device,
+            }
+        ),
+        build=MappingProxyType(
+            {
+                "cuda": torch.version.cuda,
                 "platform": platform.platform(),
                 "python": platform.python_version(),
                 "python_implementation": platform.python_implementation(),
@@ -350,6 +393,227 @@ class OfficialLiberoSession:
         del self.task
 
 
+def _canonical_task_identity(bddl_file_name: str) -> tuple[str, int]:
+    path = Path(bddl_file_name)
+    suite_name = path.parent.name.lower()
+    task_names = libero_task_map.get(suite_name)
+    if task_names is None or path.stem not in task_names:
+        raise UnsupportedBackendOperation(
+            operation="construct ControlEnv",
+            backend="warp",
+            capability="reset",
+            replacement=(
+                "a canonical LIBERO BDDL path from libero_spatial, libero_object, "
+                "libero_goal, libero_10, or libero_90"
+            ),
+        )
+    return suite_name, task_names.index(path.stem)
+
+
+def _per_camera_values(value, *, count: int, name: str) -> list[Any]:
+    if isinstance(value, np.ndarray):
+        values = value.tolist()
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        values = list(value)
+    else:
+        values = [value] * count
+    if len(values) != count:
+        raise ValueError(f"{name} must contain one value per camera ({count}).")
+    return values
+
+
+def _warp_camera_configs(task_kwargs: Mapping[str, Any]):
+    from libero.libero.runtime import CameraConfig
+
+    raw_names = task_kwargs["camera_names"]
+    if isinstance(raw_names, str):
+        names = [raw_names]
+    elif isinstance(raw_names, np.ndarray):
+        names = raw_names.tolist()
+    else:
+        names = list(raw_names)
+    if not names:
+        raise ValueError("camera_names must contain at least one camera for Warp G3.")
+    count = len(names)
+    heights = _per_camera_values(
+        task_kwargs["camera_heights"], count=count, name="camera_heights"
+    )
+    widths = _per_camera_values(
+        task_kwargs["camera_widths"], count=count, name="camera_widths"
+    )
+    depths = _per_camera_values(
+        task_kwargs["camera_depths"], count=count, name="camera_depths"
+    )
+    segmentations = _per_camera_values(
+        task_kwargs["camera_segmentations"],
+        count=count,
+        name="camera_segmentations",
+    )
+    configs = []
+    for name, height, width, depth, segmentation in zip(
+        names, heights, widths, depths, segmentations, strict=True
+    ):
+        if isinstance(segmentation, Sequence) and not isinstance(
+            segmentation, (str, bytes)
+        ):
+            modes = list(segmentation)
+            if len(modes) > 1:
+                raise UnsupportedBackendOperation(
+                    operation="construct ControlEnv",
+                    backend="warp",
+                    capability="segmentation",
+                    replacement="at most one segmentation mode per camera",
+                )
+            segmentation = modes[0] if modes else None
+        configs.append(
+            CameraConfig(
+                str(name),
+                height=int(height),
+                width=int(width),
+                depth=bool(depth),
+                segmentation=segmentation,
+            )
+        )
+    return tuple(configs)
+
+
+class WarpLiberoSession:
+    """N=1 legacy NumPy wrapper over the G3 CUDA reset/render runtime.
+
+    Warp owns the returned visual and flattened physics state. The exact
+    compiler-owned official task is kept synchronized only at reset/state-write
+    boundaries to provide nonvisual observables, predicates, and legacy read
+    attributes. Policy actions, XML reload, and reseeding remain fail-closed.
+    """
+
+    def __init__(
+        self,
+        *,
+        bddl_file_name,
+        robots,
+        controller,
+        task_kwargs,
+        requested_backend,
+        selection_source,
+    ):
+        from libero.libero.runtime import EnvConfig, make_env
+
+        robot_names = [robots] if isinstance(robots, str) else list(robots)
+        if robot_names != ["Panda"]:
+            raise UnsupportedBackendOperation(
+                operation="construct ControlEnv",
+                backend="warp",
+                capability="reset",
+                replacement="robots=['Panda'] for the G3 Warp runtime",
+            )
+        if controller != "OSC_POSE":
+            raise UnsupportedBackendOperation(
+                operation="construct ControlEnv",
+                backend="warp",
+                capability="step_osc_pose_7d",
+                replacement="controller='OSC_POSE' (step remains unavailable in G3)",
+            )
+        if (
+            not task_kwargs["use_camera_obs"]
+            or not task_kwargs["has_offscreen_renderer"]
+        ):
+            raise UnsupportedBackendOperation(
+                operation="construct ControlEnv",
+                backend="warp",
+                capability="rgb",
+                replacement="use_camera_obs=True and has_offscreen_renderer=True",
+            )
+        if task_kwargs["has_renderer"]:
+            raise UnsupportedBackendOperation(
+                operation="construct ControlEnv",
+                backend="warp",
+                capability="rgb",
+                replacement="headless has_renderer=False for the G3 Warp runtime",
+            )
+        if task_kwargs["render_gpu_device_id"] not in {-1, 0}:
+            raise UnsupportedBackendOperation(
+                operation="construct ControlEnv",
+                backend="warp",
+                capability="rgb",
+                replacement="render_gpu_device_id=-1 or logical CUDA device 0",
+            )
+        suite_name, task_index = _canonical_task_identity(str(bddl_file_name))
+        config = EnvConfig(
+            suite=suite_name,
+            task_index=task_index,
+            cameras=_warp_camera_configs(task_kwargs),
+            backend="warp",
+            num_worlds=1,
+            horizon=task_kwargs["horizon"],
+            control_freq=task_kwargs["control_freq"],
+            seed=task_kwargs.get("seed"),
+        )
+        self._runtime = make_env(config)
+        self.task = self._runtime.shadow_task
+        self.backend_info = _warp_backend_info(
+            requested_backend=requested_backend,
+            selection_source=selection_source,
+            device=str(self._runtime.device),
+        )
+
+    def reset(self):
+        self._runtime.reset()
+        return self._runtime.legacy_observation()
+
+    def step(self, action):
+        del action
+        raise UnsupportedBackendOperation(
+            operation="step",
+            backend="warp",
+            capability="step_osc_pose_7d",
+            replacement='backend="official" until the G4 Warp OSC slice',
+        )
+
+    def seed(self, seed):
+        raise UnsupportedBackendOperation(
+            operation=f"seed({seed!r})",
+            backend="warp",
+            capability="reset",
+            replacement="construct a new Warp environment with seed=...",
+        )
+
+    def _reset_with_legacy_rng(self):
+        return self.reset()
+
+    def check_success(self):
+        return self._runtime.check_success()
+
+    def get_sim_state(self):
+        return (
+            self._runtime.get_state()[0]
+            .detach()
+            .to(device="cpu")
+            .numpy()
+            .astype(np.float64, copy=True)
+        )
+
+    def set_state(self, mujoco_state):
+        self._runtime.reset(init_state=mujoco_state)
+
+    def reset_from_xml_string(self, xml_string):
+        del xml_string
+        raise UnsupportedBackendOperation(
+            operation="reset_from_xml_string",
+            backend="warp",
+            capability="model_xml_reset",
+            replacement='backend="official" until exact XML reset is wired to G3',
+        )
+
+    def regenerate_obs_from_state(self, mujoco_state):
+        self._runtime.reset(init_state=mujoco_state)
+        return self._runtime.legacy_observation()
+
+    def close(self):
+        self._runtime.close()
+        del self.task
+        del self._runtime
+
+
 class ControlEnv:
     def __init__(
         self,
@@ -384,10 +648,6 @@ class ControlEnv:
         **kwargs,
     ):
         requested_backend, selection_source = _resolve_backend(backend)
-        render_device = _official_render_device_identity(
-            render_gpu_device_id=render_gpu_device_id,
-            rendering_enabled=has_renderer or has_offscreen_renderer,
-        )
         assert os.path.exists(bddl_file_name), (
             f"[error] {bddl_file_name} does not exist!"
         )
@@ -419,21 +679,36 @@ class ControlEnv:
             "renderer_config": renderer_config,
             **kwargs,
         }
-        self._session: LiberoBackendSession = OfficialLiberoSession(
-            task_factory=TASK_MAPPING[self.problem_name],
-            bddl_file_name=bddl_file_name,
-            robots=robots,
-            controller=controller,
-            task_kwargs=task_kwargs,
-        )
+        if requested_backend == "official":
+            render_device = _official_render_device_identity(
+                render_gpu_device_id=render_gpu_device_id,
+                rendering_enabled=has_renderer or has_offscreen_renderer,
+            )
+            self._session: LiberoBackendSession = OfficialLiberoSession(
+                task_factory=TASK_MAPPING[self.problem_name],
+                bddl_file_name=bddl_file_name,
+                robots=robots,
+                controller=controller,
+                task_kwargs=task_kwargs,
+            )
+            self._backend_info = _official_backend_info(
+                requested_backend=requested_backend,
+                selection_source=selection_source,
+                render_device=render_device,
+            )
+        else:
+            self._session = WarpLiberoSession(
+                bddl_file_name=bddl_file_name,
+                robots=robots,
+                controller=controller,
+                task_kwargs=task_kwargs,
+                requested_backend=requested_backend,
+                selection_source=selection_source,
+            )
+            self._backend_info = self._session.backend_info
         # Preserve the legacy public escape hatch while session ownership stays
         # internal and replaceable.
         self.env = self._session.task
-        self._backend_info = _official_backend_info(
-            requested_backend=requested_backend,
-            selection_source=selection_source,
-            render_device=render_device,
-        )
 
     @property
     def backend_info(self) -> BackendInfo:
@@ -552,7 +827,7 @@ class SegmentationRenderEnv(OffScreenRenderEnv):
         super().__init__(**kwargs)
 
     def step(self, action):
-        return self.env.step(action)
+        return super().step(action)
 
     def reset(self):
         obs = super().reset()
