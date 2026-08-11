@@ -28,6 +28,8 @@ jobs:
   static-and-package:
     name: Python 3.12 core/package smoke
     runs-on: ubuntu-latest
+    env:
+      MUJOCO_GL: osmesa
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,6 +39,8 @@ jobs:
           python-version: '3.12'
           enable-cache: true
           cache-dependency-glob: uv.lock
+      - name: Install Mesa software renderer
+        run: sudo apt-get update && sudo apt-get install --yes libgl1-mesa-dri libosmesa6
       - name: Install locked development environment
         run: uv sync --locked --group dev
       - name: Check maintained M0 source and tests
