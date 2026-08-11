@@ -241,7 +241,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: full-official-130
     env:
-      LIBERO_DEMO_ROOT: ${{ runner.temp }}/libero-demo-cache
+      LIBERO_DEMO_ROOT: ${{ github.workspace }}/.libero-demo-cache
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
