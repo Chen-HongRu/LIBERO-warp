@@ -6,8 +6,13 @@ It does not provide a renderer, physics stepping, or a controller for Warp.
 
 from __future__ import annotations
 
+import re
+import sys
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from hashlib import sha256
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
@@ -18,6 +23,147 @@ import torch
 
 from .official import OfficialBatchEnv
 from .types import EnvConfig
+
+# LIBERO demonstration HDF5 files preserve the model XML verbatim.  Historical
+# dataset builders embedded these two absolute source roots in ``file``
+# attributes.  Remap only those exact roots: replacing arbitrary absolute paths
+# would hide an incomplete artifact instead of making it reproducible.
+_HISTORICAL_LIBERO_ASSET_ROOT = "/home/yifengz/workspace/libero-dev/chiliocosm/assets"
+_HISTORICAL_ROBOSUITE_ASSET_ROOT = (
+    "/home/yifengz/workspace/robosuite-master/robosuite/models/assets"
+)
+
+
+def _referenced_asset_suffixes(model_xml: str, historical_root: str) -> set[str]:
+    pattern = re.compile(re.escape(historical_root) + r'/([^"\']+)')
+    return set(pattern.findall(model_xml))
+
+
+def _select_complete_asset_root(
+    model_xml: str,
+    historical_root: str,
+    candidates: list[Path],
+    *,
+    label: str,
+) -> Path | None:
+    suffixes = _referenced_asset_suffixes(model_xml, historical_root)
+    if not suffixes:
+        return None
+    unique_candidates = list(dict.fromkeys(path.resolve() for path in candidates))
+    for candidate in unique_candidates:
+        if all((candidate / suffix).is_file() for suffix in suffixes):
+            return candidate
+    missing = {
+        str(candidate): sorted(
+            suffix for suffix in suffixes if not (candidate / suffix).is_file()
+        )[:3]
+        for candidate in unique_candidates
+    }
+    raise FileNotFoundError(
+        f"No complete {label} asset root could load the recorded model XML; "
+        f"checked {missing}."
+    )
+
+
+def remap_demo_model_xml_assets(
+    model_xml: str,
+    *,
+    libero_asset_root: str | Path | None = None,
+    robosuite_asset_root: str | Path | None = None,
+) -> str:
+    """Rewrite known historical demo asset roots to this installation's roots.
+
+    The XML itself remains the source of static scene placement.  This helper
+    changes just the two old asset-directory prefixes needed to load that XML
+    on a different host; unknown absolute paths are intentionally left intact
+    so MuJoCo reports a useful missing-asset error.
+    """
+    if not isinstance(model_xml, str) or not model_xml.strip():
+        raise ValueError("model_xml must be a non-empty string.")
+    libero_candidates = [
+        Path(libero_asset_root)
+        if libero_asset_root is not None
+        else Path(__file__).resolve().parents[1] / "assets"
+    ]
+    if robosuite_asset_root is not None:
+        robosuite_candidates = [Path(robosuite_asset_root)]
+    else:
+        robosuite_candidates = [
+            Path(robosuite.__file__).resolve().parent / "models" / "assets",
+            *(
+                Path(entry) / "robosuite" / "models" / "assets"
+                for entry in sys.path
+                if entry
+            ),
+        ]
+    libero_assets = _select_complete_asset_root(
+        model_xml,
+        _HISTORICAL_LIBERO_ASSET_ROOT,
+        libero_candidates,
+        label="LIBERO",
+    )
+    robosuite_assets = _select_complete_asset_root(
+        model_xml,
+        _HISTORICAL_ROBOSUITE_ASSET_ROOT,
+        robosuite_candidates,
+        label="robosuite",
+    )
+    remapped = model_xml
+    if libero_assets is not None:
+        remapped = remapped.replace(_HISTORICAL_LIBERO_ASSET_ROOT, str(libero_assets))
+    if robosuite_assets is not None:
+        remapped = remapped.replace(
+            _HISTORICAL_ROBOSUITE_ASSET_ROOT, str(robosuite_assets)
+        )
+    return remapped
+
+
+def _port_legacy_single_panda_xml(model_xml: str) -> str:
+    """Port robosuite 1.4 single-arm names to the 1.5 Panda contract.
+
+    The published demos predate composite-controller arm qualifiers. Dynamic
+    state sizes are unchanged; this migration changes identifiers only and
+    adds the reference-only center site expected by robosuite 1.5.
+    """
+    if 'name="gripper0_eef"' not in model_xml:
+        return model_xml
+    root = ET.fromstring(model_xml)
+    for element in root.iter():
+        for key, value in tuple(element.attrib.items()):
+            value = value.replace("mount0_", "fixed_mount0_")
+            value = value.replace("gripper0_", "gripper0_right_")
+            element.set(key, value)
+    if root.find(".//site[@name='robot0_right_center']") is None:
+        link0 = root.find(".//body[@name='robot0_link0']")
+        if link0 is None:
+            raise ValueError("Legacy Panda exact model is missing body 'robot0_link0'.")
+        ET.SubElement(
+            link0,
+            "site",
+            {
+                "name": "robot0_right_center",
+                "pos": "0 0 0",
+                "size": "0.01",
+                "group": "2",
+                "rgba": "1 0.3 0.3 -1",
+            },
+        )
+    return ET.tostring(root, encoding="unicode")
+
+
+def _sha256_text(value: str) -> str:
+    return sha256(value.encode("utf-8")).hexdigest()
+
+
+def _validate_sha256(value: str, *, name: str) -> None:
+    if not isinstance(value, str) or len(value) != 64:
+        raise ValueError(f"{name} must be a 64-character SHA-256 hex digest.")
+    try:
+        int(value, 16)
+    except ValueError as error:
+        raise ValueError(
+            f"{name} must be a 64-character SHA-256 hex digest."
+        ) from error
 
 
 def _freeze_id_mapping(values: Mapping[str, int]) -> Mapping[str, int]:
@@ -91,6 +237,8 @@ class TaskRuntimeMetadata:
     nu: int
     na: int
     fullphysics_state_size: int
+    source_model_xml_sha256: str | None
+    remapped_model_xml_sha256: str | None
     body_ids: Mapping[str, int]
     site_ids: Mapping[str, int]
     geom_ids: Mapping[str, int]
@@ -106,6 +254,10 @@ class TaskRuntimeMetadata:
             raise ValueError("timestep and control_frequency must be positive.")
         if self.control_substeps <= 0:
             raise ValueError("control_substeps must be positive.")
+        for name in ("source_model_xml_sha256", "remapped_model_xml_sha256"):
+            value = getattr(self, name)
+            if value is not None:
+                _validate_sha256(value, name=name)
         for name in (
             "body_ids",
             "site_ids",
@@ -370,10 +522,49 @@ class CompiledTask:
 class TaskCompiler:
     """Compile one canonical LIBERO task through the official BDDL backend."""
 
-    def compile(self, config: EnvConfig) -> CompiledTask:
-        """Construct and decode one task without creating a Warp runtime."""
+    def compile(
+        self,
+        config: EnvConfig,
+        *,
+        exact_model_xml: str | None = None,
+        expected_model_xml_sha256: str | None = None,
+    ) -> CompiledTask:
+        """Construct and decode one task without creating a Warp runtime.
+
+        ``exact_model_xml`` is an opt-in path for replaying a LIBERO HDF5 demo
+        against its recorded static MuJoCo scene rather than reconstructing a
+        seed-dependent BDDL placement.  It never changes the default compiler
+        path.  When supplied, ``expected_model_xml_sha256`` verifies the raw
+        HDF5 payload *before* host-specific asset paths are remapped.
+        """
         if not isinstance(config, EnvConfig):
             raise TypeError("TaskCompiler.compile requires an EnvConfig instance.")
+        if exact_model_xml is None and expected_model_xml_sha256 is not None:
+            raise ValueError(
+                "expected_model_xml_sha256 requires exact_model_xml to be supplied."
+            )
+        if expected_model_xml_sha256 is not None:
+            _validate_sha256(
+                expected_model_xml_sha256, name="expected_model_xml_sha256"
+            )
+        source_xml_sha256: str | None = None
+        remapped_xml_sha256: str | None = None
+        remapped_model_xml: str | None = None
+        if exact_model_xml is not None:
+            if not isinstance(exact_model_xml, str) or not exact_model_xml.strip():
+                raise ValueError("exact_model_xml must be a non-empty string.")
+            source_xml_sha256 = _sha256_text(exact_model_xml)
+            if (
+                expected_model_xml_sha256 is not None
+                and source_xml_sha256 != expected_model_xml_sha256.lower()
+            ):
+                raise ValueError(
+                    "exact_model_xml SHA-256 did not match expected_model_xml_sha256."
+                )
+            remapped_model_xml = _port_legacy_single_panda_xml(
+                remap_demo_model_xml_assets(exact_model_xml)
+            )
+            remapped_xml_sha256 = _sha256_text(remapped_model_xml)
         official_compile_config = replace(config, backend="official", num_worlds=1)
         official_env = OfficialBatchEnv(official_compile_config)
         try:
@@ -381,6 +572,14 @@ class TaskCompiler:
             # model. Subsequent compiler and public resets stay soft so this
             # exact MjModel remains stable for MJWarp handoff.
             official_env.reset()
+            if remapped_model_xml is not None:
+                # robosuite owns controller construction.  Rebind its simulator
+                # through its public XML reset API, then reset only MuJoCo data;
+                # calling a subsequent hard env reset would regenerate the BDDL
+                # placement and discard this recorded static scene.
+                official_env.reset_from_xml_string(remapped_model_xml)
+                official_env._env.sim.reset()
+                official_env._env.sim.forward()
             official_env._env.env.hard_reset = False
             model = official_env._env.sim.model._model
             if not isinstance(model, mujoco.MjModel):
@@ -388,7 +587,13 @@ class TaskCompiler:
                     "Official backend did not expose a mujoco.MjModel through "
                     "sim.model._model."
                 )
-            metadata = self._compile_metadata(official_env, model, target_config=config)
+            metadata = self._compile_metadata(
+                official_env,
+                model,
+                target_config=config,
+                source_model_xml_sha256=source_xml_sha256,
+                remapped_model_xml_sha256=remapped_xml_sha256,
+            )
             init_state_bank = self._load_init_state_bank(official_env, metadata)
             if model is not official_env._env.sim.model._model:
                 raise RuntimeError(
@@ -410,6 +615,8 @@ class TaskCompiler:
         model: mujoco.MjModel,
         *,
         target_config: EnvConfig,
+        source_model_xml_sha256: str | None,
+        remapped_model_xml_sha256: str | None,
     ) -> TaskRuntimeMetadata:
         camera_ids = _name_to_id(model, mujoco.mjtObj.mjOBJ_CAMERA, model.ncam)
         requested_camera_names = [camera.name for camera in official_env.config.cameras]
@@ -458,6 +665,8 @@ class TaskCompiler:
             nu=model.nu,
             na=model.na,
             fullphysics_state_size=fullphysics_state_size,
+            source_model_xml_sha256=source_model_xml_sha256,
+            remapped_model_xml_sha256=remapped_model_xml_sha256,
             body_ids=_name_to_id(model, mujoco.mjtObj.mjOBJ_BODY, model.nbody),
             site_ids=_name_to_id(model, mujoco.mjtObj.mjOBJ_SITE, model.nsite),
             geom_ids=_name_to_id(model, mujoco.mjtObj.mjOBJ_GEOM, model.ngeom),

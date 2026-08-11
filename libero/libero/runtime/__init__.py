@@ -9,6 +9,7 @@ from .compiler import (
     TaskCompiler,
     TaskRuntimeMetadata,
     gather_init_states,
+    remap_demo_model_xml_assets,
     reset_all_worlds,
     scatter_init_states,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "TaskRuntimeMetadata",
     "gather_init_states",
     "make_env",
+    "remap_demo_model_xml_assets",
     "reset_all_worlds",
     "scatter_init_states",
 ]

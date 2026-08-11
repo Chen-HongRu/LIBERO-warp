@@ -9,6 +9,7 @@ Run on a rendering-capable workstation, for example::
 from __future__ import annotations
 
 import os
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -263,3 +264,81 @@ def test_local_demo_replay_hook() -> None:
         "no complete local demonstration replay satisfied the LIBERO success "
         f"predicate; attempted {attempted_demos}"
     )
+
+
+@pytest.mark.nightly
+@pytest.mark.official_integration
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "published demo uses a robosuite 1.4 controller boundary that the 1.5 "
+        "exact-model compatibility path does not yet reproduce"
+    ),
+)
+def test_task_compiler_exact_model_replays_fixed_positive_source_demo() -> None:
+    """Use a demo's recorded XML, not a seed-rebuilt BDDL placement, for replay.
+
+    This is the positive regression for the adapter path used before handing an
+    HDF5 demo model to MJWarp.  It deliberately accepts any locally available
+    successful LIBERO task-named demo and skips when private demo data is not
+    configured.
+    """
+    demo_root = os.environ.get("LIBERO_DEMO_ROOT")
+    if not demo_root:
+        pytest.skip(
+            "set LIBERO_DEMO_ROOT to a locally downloaded LIBERO demo directory"
+        )
+    h5py = pytest.importorskip("h5py", reason="h5py is required to inspect local demos")
+    pytest.importorskip(
+        "robosuite", reason="robosuite is required to replay local demos"
+    )
+    from libero.libero.runtime import CameraConfig, EnvConfig, TaskCompiler
+
+    demo_name = "KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it_demo.hdf5"
+    matches = sorted(Path(demo_root).rglob(demo_name))
+    if not matches:
+        pytest.skip(f"exact-model positive regression demo is missing: {demo_name}")
+    demo_path = matches[0]
+    with h5py.File(demo_path, "r") as dataset:
+        demo = dataset["data/demo_0"]
+        model_xml = demo.attrs["model_file"]
+        if isinstance(model_xml, bytes):
+            model_xml = model_xml.decode("utf-8")
+        actions = demo["actions"][:]
+        states = demo["states"][:]
+
+    config = EnvConfig(
+        suite="libero_10",
+        task_index=2,
+        cameras=[CameraConfig("agentview", 64, 64)],
+        horizon=max(1000, len(actions) + 1),
+        seed=0,
+    )
+    source_sha256 = sha256(model_xml.encode("utf-8")).hexdigest()
+    compiled = TaskCompiler().compile(
+        config,
+        exact_model_xml=model_xml,
+        expected_model_xml_sha256=source_sha256,
+    )
+    try:
+        import numpy as np
+
+        assert compiled.metadata.source_model_xml_sha256 == source_sha256
+        assert compiled.metadata.remapped_model_xml_sha256 is not None
+        body_pos_before = compiled.model.body_pos.copy()
+        with pytest.raises(RuntimeError, match="would resample model-level"):
+            compiled.official_env.reset(init_state=states[0])
+        compiled.official_env.reset_exact_state(init_state=states[0])
+        success_steps = []
+        for action_index, action in enumerate(
+            actions_from_hdf_state_action_alignment(states, actions)
+        ):
+            transition = compiled.official_env.step(action[None])
+            assert transition.info["official_done"] in {True, False}
+            if bool(transition.terminated[0]):
+                success_steps.append(action_index)
+        np.testing.assert_array_equal(compiled.model.body_pos, body_pos_before)
+        assert success_steps
+        assert bool(compiled.official_env._env.check_success())
+    finally:
+        compiled.close()

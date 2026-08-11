@@ -24,12 +24,14 @@ class _SpikeBenchmarkRunner:
         ctrl_trace: torch.Tensor,
         initial_fullphysics: torch.Tensor,
         trace_report: Mapping[str, Any],
+        ctrl_graph_mode: str | None = None,
     ) -> None:
         self.spike = spike
         self.trace = ctrl_trace
         self.cursor = 0
         self._reset_before_next_control = False
         self.initial_fullphysics = initial_fullphysics
+        self.ctrl_graph_mode = ctrl_graph_mode
         # Serialize through JSON so the cached artifact metadata and fingerprint
         # remain JSON-safe and detached from the trace archive's mutable dict.
         self._trace_report = json.loads(json.dumps(trace_report, sort_keys=True))
@@ -49,7 +51,11 @@ class _SpikeBenchmarkRunner:
         if self._reset_before_next_control:
             self.spike.reset_fullphysics_prevalidated(self.initial_fullphysics)
             self._reset_before_next_control = False
-        self.spike.replay_ctrl(self._next_ctrl(), check_health=False, validate=False)
+        ctrl = self._next_ctrl()
+        if self.ctrl_graph_mode is None:
+            self.spike.replay_ctrl(ctrl, check_health=False, validate=False)
+        else:
+            self.spike.replay_captured_ctrl(ctrl, check_health=False, validate=False)
         if self.cursor == self.trace.shape[1]:
             self.cursor = 0
             self._reset_before_next_control = True
@@ -127,6 +133,11 @@ def make_spike_benchmark_runner(num_worlds: int) -> _SpikeBenchmarkRunner:
         CameraConfig("sideview", 128, 128),
     )
     compiled = TaskCompiler().compile(trace_config)
+    graph_mode = os.environ.get("LIBERO_M1_CTRL_GRAPH")
+    if graph_mode not in {None, "graph-1", "graph-25"}:
+        raise ValueError(
+            "LIBERO_M1_CTRL_GRAPH must be unset, 'graph-1', or 'graph-25'."
+        )
     spike: MJWarpSpike | None = None
     try:
         fingerprint = _validate_trace_metadata(
@@ -156,11 +167,14 @@ def make_spike_benchmark_runner(num_worlds: int) -> _SpikeBenchmarkRunner:
         raise
     # [K, 25, nu] -> [N, K, 25, nu]; benchmark hands one [N,25,nu] control step.
     trace = ctrl.unsqueeze(0).expand(num_worlds, -1, -1, -1)
+    if graph_mode is not None:
+        spike.capture_ctrl_replay_graph(trace[:, 0], mode=graph_mode)
     return _SpikeBenchmarkRunner(
         spike,
         trace,
         initial,
         trace_report={"metadata": metadata, "fingerprint": fingerprint},
+        ctrl_graph_mode=graph_mode,
     )
 
 

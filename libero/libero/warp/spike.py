@@ -68,6 +68,8 @@ class MJWarpSpike:
         nccdmax: int = 256,
         njmax: int = 4096,
         njmax_nnz: int = 65536,
+        naconmax: int | None = None,
+        nvmax: int | None = None,
     ) -> None:
         if not isinstance(compiled, CompiledTask):
             raise TypeError("compiled must be a CompiledTask.")
@@ -97,14 +99,22 @@ class MJWarpSpike:
         # static for M1, so keep every optional model field shared explicitly.
         with wp.ScopedDevice(self._warp_device):
             self.model = mjw.put_model(compiled.model, batch_sizes={})
-            self.data = mjw.make_data(
-                compiled.model,
-                nworld=num_worlds,
-                nconmax=nconmax,
-                nccdmax=nccdmax,
-                njmax=njmax,
-                njmax_nnz=njmax_nnz,
-            )
+            make_data_kwargs = {
+                "nworld": num_worlds,
+                "nconmax": nconmax,
+                "nccdmax": nccdmax,
+                "njmax": njmax,
+                "njmax_nnz": njmax_nnz,
+            }
+            # ``nconmax`` is the compatibility spelling retained by
+            # mujoco-warp's wrapper.  These optional current-version knobs let
+            # the investigation harness size shared contacts / compact solver
+            # workspace from measured occupancy without changing M1 defaults.
+            if naconmax is not None:
+                make_data_kwargs["naconmax"] = naconmax
+            if nvmax is not None:
+                make_data_kwargs["nvmax"] = nvmax
+            self.data = mjw.make_data(compiled.model, **make_data_kwargs)
         self._state_signature = int(mjw.State.FULLPHYSICS)
         # M1 reset/replay only needs FULLPHYSICS.  Avoid retaining redundant
         # qpos/qvel/act/time/init-state copies for every large batch runner.
@@ -126,6 +136,13 @@ class MJWarpSpike:
         self._geometry_class: torch.Tensor | None = None
         self._rgb_tensors: dict[str, torch.Tensor] = {}
         self._rgb_buffers: dict[str, wp.array] = {}
+        self._ctrl_graph = None
+        self._ctrl_graph_mode: str | None = None
+        self._ctrl_graph_staging: torch.Tensor | None = None
+        self._ctrl_graph_staging_array: wp.array | None = None
+        self._ctrl_graph_source: wp.array | None = None
+        self._ctrl_graph_target: wp.array | None = None
+        self._ctrl_graph_substeps: int | None = None
         self._closed = False
 
     @property
@@ -237,24 +254,7 @@ class MJWarpSpike:
     ) -> None:
         """Replay CUDA ``[N, K, nu]`` actuator controls one physics step at a time."""
         self._ensure_open()
-        if not isinstance(ctrl_sequence, torch.Tensor):
-            raise TypeError("ctrl_sequence must be a CUDA torch.Tensor.")
-        if ctrl_sequence.device != self.device or ctrl_sequence.ndim != 3:
-            raise ValueError(
-                "ctrl_sequence must have shape [N, K, nu] on the spike device."
-            )
-        if (
-            ctrl_sequence.shape[0] != self.num_worlds
-            or ctrl_sequence.shape[2] != self.nu
-        ):
-            raise ValueError(
-                "ctrl_sequence must have shape "
-                f"[{self.num_worlds}, K, {self.nu}], got {list(ctrl_sequence.shape)}."
-            )
-        if not torch.is_floating_point(ctrl_sequence):
-            raise TypeError("ctrl_sequence must use a floating-point dtype.")
-        if validate and not torch.isfinite(ctrl_sequence).all():
-            raise ValueError("ctrl_sequence contains non-finite values.")
+        self._validate_ctrl_sequence(ctrl_sequence, validate=validate)
         with wp.ScopedDevice(self._warp_device):
             ctrl_target = wp.to_torch(self.data.ctrl)
             for substep in range(ctrl_sequence.shape[1]):
@@ -262,6 +262,107 @@ class MJWarpSpike:
                 mjw.step(self.model, self.data)
         if check_health:
             self.assert_healthy("ctrl replay")
+
+    def capture_ctrl_replay_graph(
+        self, ctrl_template: torch.Tensor, *, mode: str
+    ) -> None:
+        """Capture one exact fixed-length raw-ctrl replay using Warp CUDA Graphs.
+
+        ``ctrl_template`` defines a stable device buffer shape only; every replay
+        copies fresh values into an internal CUDA staging tensor.  ``graph-1``
+        captures a single physics step and launches it 25 times, whereas
+        ``graph-25`` captures all 25 distinct control-row copies plus steps.
+        """
+        self._ensure_open()
+        if mode not in {"graph-1", "graph-25"}:
+            raise ValueError("mode must be 'graph-1' or 'graph-25'.")
+        self._validate_ctrl_sequence(ctrl_template, validate=False)
+        if self._ctrl_graph is not None:
+            raise RuntimeError(
+                "A ctrl replay graph is already captured for this spike."
+            )
+        # Graph copy nodes address one physics substep across all worlds, so
+        # keep the persistent source in [K, N, nu] order.  The public control
+        # contract remains [N, K, nu].  Flattening [N, K, nu] and offsetting by
+        # ``K`` would otherwise walk successive substeps of world 0 rather
+        # than the same substep of every world.
+        staging = torch.empty(
+            (
+                ctrl_template.shape[1],
+                ctrl_template.shape[0],
+                ctrl_template.shape[2],
+            ),
+            device=self.device,
+            dtype=ctrl_template.dtype,
+        )
+        staging.copy_(ctrl_template.permute(1, 0, 2))
+        source = wp.from_torch(staging.flatten())
+        target = wp.from_torch(wp.to_torch(self.data.ctrl).flatten())
+        row_size = self.num_worlds * self.nu
+        with wp.ScopedCapture(
+            device=self._warp_device, force_module_load=False
+        ) as capture:
+            if mode == "graph-1":
+                mjw.step(self.model, self.data)
+            else:
+                for substep in range(ctrl_template.shape[1]):
+                    wp.copy(
+                        target,
+                        source,
+                        src_offset=substep * row_size,
+                        count=row_size,
+                    )
+                    mjw.step(self.model, self.data)
+        self._ctrl_graph = capture.graph
+        self._ctrl_graph_mode = mode
+        self._ctrl_graph_staging = staging
+        self._ctrl_graph_staging_array = wp.from_torch(staging)
+        self._ctrl_graph_source = source
+        self._ctrl_graph_target = target
+        self._ctrl_graph_substeps = int(ctrl_template.shape[1])
+
+    def replay_captured_ctrl(
+        self,
+        ctrl_sequence: torch.Tensor,
+        *,
+        check_health: bool = True,
+        validate: bool = True,
+    ) -> None:
+        """Replay a previously captured exact raw-ctrl graph with fresh CUDA input."""
+        self._ensure_open()
+        if (
+            self._ctrl_graph is None
+            or self._ctrl_graph_staging is None
+            or self._ctrl_graph_staging_array is None
+        ):
+            raise RuntimeError("Call capture_ctrl_replay_graph before graph replay.")
+        self._validate_ctrl_sequence(ctrl_sequence, validate=validate)
+        if ctrl_sequence.shape[1] != self._ctrl_graph_substeps:
+            raise ValueError("ctrl_sequence substeps do not match the captured graph.")
+        # ``runner.trace`` is intentionally an ``expand`` view across worlds.
+        # Torch materializes that broadcast and transposes it into the [K,N,nu]
+        # graph-source layout.  Warp's ``from_torch`` import would not perform
+        # either operation.  Torch and Warp use distinct CUDA streams here;
+        # the explicit fence is required until a supported cross-stream event
+        # hand-off is available.
+        self._ctrl_graph_staging.copy_(ctrl_sequence.permute(1, 0, 2))
+        torch.cuda.current_stream(self.device).synchronize()
+        if self._ctrl_graph_mode == "graph-1":
+            if self._ctrl_graph_source is None or self._ctrl_graph_target is None:
+                raise RuntimeError("Captured graph control buffers are unavailable.")
+            row_size = self.num_worlds * self.nu
+            for substep in range(ctrl_sequence.shape[1]):
+                wp.copy(
+                    self._ctrl_graph_target,
+                    self._ctrl_graph_source,
+                    src_offset=substep * row_size,
+                    count=row_size,
+                )
+                wp.capture_launch(self._ctrl_graph)
+        else:
+            wp.capture_launch(self._ctrl_graph)
+        if check_health:
+            self.assert_healthy("captured ctrl replay")
 
     def physics_readout(self) -> dict[str, torch.Tensor]:
         """Return zero-copy CUDA views for parity checks (qpos/qvel/body/site/time)."""
@@ -463,6 +564,13 @@ class MJWarpSpike:
         self._render_context = None
         self._rgb_tensors.clear()
         self._rgb_buffers.clear()
+        self._ctrl_graph = None
+        self._ctrl_graph_mode = None
+        self._ctrl_graph_staging = None
+        self._ctrl_graph_staging_array = None
+        self._ctrl_graph_source = None
+        self._ctrl_graph_target = None
+        self._ctrl_graph_substeps = None
         self._geometry_instance = None
         self._geometry_class = None
         self._render_cameras = ()
@@ -497,6 +605,28 @@ class MJWarpSpike:
         bound = self._init_fullphysics.shape[0] if upper is None else upper
         if torch.any(indices < 0) or torch.any(indices >= bound):
             raise IndexError(f"{name} contains an out-of-range index.")
+
+    def _validate_ctrl_sequence(
+        self, ctrl_sequence: torch.Tensor, *, validate: bool
+    ) -> None:
+        if not isinstance(ctrl_sequence, torch.Tensor):
+            raise TypeError("ctrl_sequence must be a CUDA torch.Tensor.")
+        if ctrl_sequence.device != self.device or ctrl_sequence.ndim != 3:
+            raise ValueError(
+                "ctrl_sequence must have shape [N, K, nu] on the spike device."
+            )
+        if (
+            ctrl_sequence.shape[0] != self.num_worlds
+            or ctrl_sequence.shape[2] != self.nu
+        ):
+            raise ValueError(
+                "ctrl_sequence must have shape "
+                f"[{self.num_worlds}, K, {self.nu}], got {list(ctrl_sequence.shape)}."
+            )
+        if not torch.is_floating_point(ctrl_sequence):
+            raise TypeError("ctrl_sequence must use a floating-point dtype.")
+        if validate and not torch.isfinite(ctrl_sequence).all():
+            raise ValueError("ctrl_sequence contains non-finite values.")
 
     @staticmethod
     def _assert_compiled_model_current(compiled: CompiledTask) -> None:

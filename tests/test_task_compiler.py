@@ -76,9 +76,72 @@ def test_public_compiler_api_exports_trusted_state_utilities() -> None:
         "gather_init_states",
         "scatter_init_states",
         "reset_all_worlds",
+        "remap_demo_model_xml_assets",
     }
     assert required_symbols <= set(runtime.__all__)
     assert all(callable(getattr(runtime, symbol)) for symbol in required_symbols)
+
+
+@pytest.mark.static
+def test_exact_demo_xml_asset_remap_only_rewrites_known_historical_roots(
+    tmp_path,
+) -> None:
+    from libero.libero.runtime import remap_demo_model_xml_assets
+
+    libero_assets = tmp_path / "libero-assets"
+    robosuite_assets = tmp_path / "robosuite-assets"
+    libero_mesh = libero_assets / "stable_scanned_objects/moka_pot/mesh.stl"
+    robosuite_mesh = robosuite_assets / "mounts/meshes/rethink_mount/pedestal.stl"
+    libero_mesh.parent.mkdir(parents=True)
+    robosuite_mesh.parent.mkdir(parents=True)
+    libero_mesh.write_bytes(b"")
+    robosuite_mesh.write_bytes(b"")
+    source = (
+        '<mujoco><asset><mesh file="'
+        "/home/yifengz/workspace/libero-dev/chiliocosm/assets/stable_scanned_objects/"
+        'moka_pot/mesh.stl"/><mesh file="'
+        "/home/yifengz/workspace/robosuite-master/robosuite/models/assets/"
+        "mounts/meshes/rethink_mount/pedestal.stl"
+        '"/><mesh file="/unrelated/asset.stl"/></asset></mujoco>'
+    )
+    remapped = remap_demo_model_xml_assets(
+        source,
+        libero_asset_root=libero_assets,
+        robosuite_asset_root=robosuite_assets,
+    )
+
+    assert "/home/yifengz/workspace/libero-dev/chiliocosm/assets" not in remapped
+    assert (
+        "/home/yifengz/workspace/robosuite-master/robosuite/models/assets"
+        not in remapped
+    )
+    assert "/unrelated/asset.stl" in remapped
+    assert str(libero_mesh) in remapped
+    assert str(robosuite_mesh) in remapped
+
+    with pytest.raises(ValueError, match="non-empty"):
+        remap_demo_model_xml_assets("")
+
+
+@pytest.mark.static
+def test_exact_demo_xml_ports_only_legacy_single_panda_identifiers() -> None:
+    from libero.libero.runtime.compiler import _port_legacy_single_panda_xml
+
+    legacy = (
+        '<mujoco><worldbody><body name="robot0_base">'
+        '<body name="robot0_link0"/><body name="mount0_base"/>'
+        '<body name="gripper0_eef"><joint name="gripper0_finger_joint1"/>'
+        '</body></body></worldbody><actuator><motor name="gripper0_gripper" '
+        'joint="gripper0_finger_joint1"/></actuator></mujoco>'
+    )
+    ported = _port_legacy_single_panda_xml(legacy)
+
+    assert 'name="fixed_mount0_base"' in ported
+    assert 'name="gripper0_right_eef"' in ported
+    assert 'name="gripper0_right_gripper"' in ported
+    assert 'joint="gripper0_right_finger_joint1"' in ported
+    assert 'name="robot0_right_center"' in ported
+    assert _port_legacy_single_panda_xml(ported) == ported
 
 
 @pytest.mark.static

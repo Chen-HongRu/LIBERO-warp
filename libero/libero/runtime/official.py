@@ -43,6 +43,7 @@ class OfficialBatchEnv:
             raise ValueError("The official backend only supports num_worlds=1.")
         self.config = config
         self._closed = False
+        self._exact_model_loaded = False
         self._last_raw_observation: Mapping[str, np.ndarray] | None = None
 
         if config.suite not in _CANONICAL_SUITES:
@@ -120,12 +121,74 @@ class OfficialBatchEnv:
         when supplied. Reset never performs any implicit action continuation.
         """
         self._ensure_open()
+        if self._exact_model_loaded:
+            raise RuntimeError(
+                "reset() would resample model-level LIBERO placement after an exact "
+                "XML model was loaded; use reset_exact_state(init_state=...) instead."
+            )
         self._validate_world_ids(world_ids)
         raw_observation = self._env.reset()
         if init_state is not None:
             raw_observation = self._env.set_init_state(
                 self._normalize_init_state(init_state)
             )
+        self._last_raw_observation = raw_observation
+        return self._make_observation(raw_observation)
+
+    def reset_from_xml_string(self, xml_string: str) -> None:
+        """Replace the MuJoCo model with a trusted, already-remapped XML model.
+
+        This is deliberately separate from :meth:`reset`: loading an XML model
+        recreates robosuite's simulator and invalidates the previously exposed
+        model identity.  The task compiler uses it only while constructing a
+        one-world source model, before it publishes any metadata or state bank.
+        """
+        self._ensure_open()
+        if not isinstance(xml_string, str) or not xml_string.strip():
+            raise ValueError("xml_string must be a non-empty string.")
+        raw_env = self._env.env
+        processors = raw_env._xml_processors
+        # robosuite's default ``edit_model_xml`` rewrites every path containing
+        # a ``robosuite`` segment back to the currently imported distribution.
+        # That breaks a correctly remapped demo when the import overlay has an
+        # incomplete asset wheel.  The HDF payload is already a final model XML,
+        # so preserve its verified absolute asset paths during this one reset.
+        exact_processors = [
+            processor
+            for processor in processors
+            if getattr(processor, "__name__", None) != "edit_model_xml"
+        ]
+        raw_env._xml_processors = exact_processors
+        try:
+            self._env.reset_from_xml_string(xml_string)
+        finally:
+            raw_env._xml_processors = processors
+        self._exact_model_loaded = True
+        self._last_raw_observation = None
+
+    def reset_exact_state(
+        self,
+        *,
+        init_state: torch.Tensor | np.ndarray,
+        world_ids: Sequence[int] | np.ndarray | torch.Tensor | None = None,
+    ) -> ObservationBatch:
+        """Restore an HDF state without rerunning LIBERO's placement sampler.
+
+        ``reset_from_xml_string`` already resets controller and wrapper state.
+        This method follows the official demo replay order: reset MuJoCo data,
+        install the recorded flattened state, forward, and regenerate sensors.
+        It intentionally cannot be used unless an exact XML model was loaded.
+        """
+        self._ensure_open()
+        self._validate_world_ids(world_ids)
+        if not self._exact_model_loaded:
+            raise RuntimeError(
+                "reset_exact_state requires reset_from_xml_string during compilation."
+            )
+        self._env.sim.reset()
+        raw_observation = self._env.set_init_state(
+            self._normalize_init_state(init_state)
+        )
         self._last_raw_observation = raw_observation
         return self._make_observation(raw_observation)
 

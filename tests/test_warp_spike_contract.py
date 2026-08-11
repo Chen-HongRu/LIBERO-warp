@@ -53,6 +53,18 @@ PILOT_SEED = 0
 _SHA256 = "0" * 64
 
 
+@pytest.mark.static
+def test_graph_ctrl_staging_layout_preserves_expanded_world_rows() -> None:
+    """Graph substep copies must address [substep, world, actuator]."""
+    one_world_trace = torch.arange(25 * 3, dtype=torch.float32).reshape(1, 25, 3)
+    controls = one_world_trace.expand(4, -1, -1)
+    assert not controls.is_contiguous()
+
+    staging = controls.permute(1, 0, 2).contiguous()
+    for substep in (0, 7, 24):
+        assert torch.equal(staging[substep], controls[:, substep])
+
+
 def _valid_m1_metadata() -> dict[str, Any]:
     """Small JSON-safe M1 trace identity for static benchmark contracts."""
 
