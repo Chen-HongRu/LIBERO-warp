@@ -485,8 +485,13 @@ def test_real_default_backend_state_xml_and_metadata_golden() -> None:
         model_xml = env.sim.model.get_xml()
         env.reset_from_xml_string(model_xml)
         restored = env.set_init_state(state)
-        np.testing.assert_array_equal(
-            restored["agentview_image"], observation["agentview_image"]
+        # The official backend does not advertise render_exact_restore; OSMesa
+        # may shift an edge pixel by one uint8 quantization level after XML reload.
+        np.testing.assert_allclose(
+            restored["agentview_image"],
+            observation["agentview_image"],
+            rtol=0.0,
+            atol=1,
         )
         np.testing.assert_allclose(env.get_sim_state(), state, rtol=0.0, atol=0.0)
     finally:
