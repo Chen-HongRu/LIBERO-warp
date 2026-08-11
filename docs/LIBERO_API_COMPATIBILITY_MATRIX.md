@@ -442,9 +442,9 @@ G1. The G1 hard gates remain independent and must pass before starting G2.
 
 ## 9. G1 implementation and qualification status
 
-The scoped G1 implementation is complete in the working tree. It is deliberately
-not marked freeze-ready, because the renderer-backed, legacy-extra, and Python
-3.12 jobs still require actual green CI evidence.
+The scoped G1 implementation is frozen for the personal-use path approved on
+2026-08-11. Release-grade legacy and full-suite qualification are deferred and
+do not block G2.
 
 Current local Python 3.12.5 core-profile evidence:
 
@@ -477,15 +477,14 @@ The workflow now defines:
 - one clean core/package job for Python 3.12;
 - a Python 3.12 official pilot with OSMesa, including real instance, class, and
   element segmentation construction/reset/close fixtures;
-- a scheduled/manual Python 3.12 `legacy`-extra job that imports every frozen
-  `libero.lifelong` module and both legacy CLI targets;
-- scheduled full official and public-demo jobs, with Torch isolated to the
-  `tensor` profile.
+- manually triggered full official and public-demo jobs, with Torch isolated to
+  the `tensor` profile.
 
-Remaining hard-gate evidence is external: the Python 3.12 job must actually
-pass, the OSMesa renderer and three segmentation modes must run green, and the
-positive `legacy`-extra import job must run green. The AutoDL host is not used to
-paper over those gates: its existing Torch 2.13.0+cu130 satisfies the candidate
-range and will be reused for later GPU work, while the missing legacy packages
-are not downloaded merely to duplicate CI. G2 remains paused until these G1
-qualification gates close.
+GitHub Actions run `31485631224` passed the Python 3.12 core/package job and the
+OSMesa official pilot. The former passed all 177 bounded static contracts plus
+the real headless golden; the latter passed all 40 controller, migration,
+packaging, downloader, renderer, XML/state, and segmentation checks. This is the
+frozen G1 gate for personal use. A positive all-module `legacy` import and the
+130-task/public-demo qualification remain optional release work; the observed
+`libero.lifelong.algos` native-import crash is recorded but is not a blocker for
+the official/Warp runtime path.

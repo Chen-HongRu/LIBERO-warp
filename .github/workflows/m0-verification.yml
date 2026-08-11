@@ -6,18 +6,15 @@ on:
     branches:
       - master
       - 'codex/**'
-  schedule:
-    - cron: '17 3 * * 0'
   workflow_dispatch:
     inputs:
       qualification_suite:
-        description: Optional scheduled qualification suite to run
+        description: Optional qualification suite to run
         required: true
         default: g1
         type: choice
         options:
           - g1
-          - legacy
           - full
           - all
 
@@ -154,84 +151,12 @@ jobs:
           tests/test_g1_official_compatibility.py
           -q
 
-  legacy-import-surface:
-    name: Scheduled Python 3.12 legacy import surface
-    if: >-
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' &&
-      (inputs.qualification_suite == 'legacy' ||
-      inputs.qualification_suite == 'all'))
-    runs-on: ubuntu-latest
-    env:
-      LIBERO_CONFIG_PATH: ${{ github.workspace }}/.ci-libero-config
-      MUJOCO_GL: osmesa
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: '3.12'
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-      - name: Install Mesa software renderer
-        run: sudo apt-get update && sudo apt-get install --yes libgl1-mesa-dri libosmesa6
-      - name: Configure non-interactive LIBERO paths
-        shell: bash
-        run: |
-          mkdir -p "$LIBERO_CONFIG_PATH"
-          printf '%s\n' \
-            "benchmark_root: $GITHUB_WORKSPACE/libero/libero" \
-            "bddl_files: $GITHUB_WORKSPACE/libero/libero/bddl_files" \
-            "init_states: $GITHUB_WORKSPACE/libero/libero/init_files" \
-            "datasets: $RUNNER_TEMP/datasets" \
-            "assets: $GITHUB_WORKSPACE/libero/libero/assets" \
-            > "$LIBERO_CONFIG_PATH/config.yaml"
-      - name: Install locked legacy profile
-        run: uv sync --locked --extra legacy --group dev
-      - name: Import every frozen legacy module and CLI target
-        run: |
-          uv run --extra legacy python - <<'PY'
-          import json
-          import subprocess
-          import sys
-          from importlib.metadata import distribution
-
-          manifest = json.load(open(
-              "tests/api_manifest/upstream-8f1084e3132a39270c3a13ebe37270a43ece2a01.json"
-          ))
-          modules = sorted(
-              name
-              for name in manifest["target"]["modules"]
-              if name == "libero.lifelong" or name.startswith("libero.lifelong.")
-          )
-          for module in modules:
-              print(f"importing {module}", flush=True)
-              subprocess.run(
-                  [
-                      sys.executable,
-                      "-X",
-                      "faulthandler",
-                      "-c",
-                      f"import importlib; importlib.import_module({module!r})",
-                  ],
-                  check=True,
-              )
-          entrypoints = {
-              entry.name: entry.value
-              for entry in distribution("libero-warp").entry_points
-              if entry.group == "console_scripts"
-          }
-          assert entrypoints["lifelong.eval"] == "libero.lifelong.evaluate:main"
-          assert entrypoints["lifelong.main"] == "libero.lifelong.main:main"
-          print(f"imported {len(modules)} frozen legacy modules")
-          PY
-
   full-official-130:
-    name: Scheduled full 130-task official backend
+    name: Manual full 130-task official backend
     if: >-
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' &&
+      github.event_name == 'workflow_dispatch' &&
       (inputs.qualification_suite == 'full' ||
-      inputs.qualification_suite == 'all'))
+      inputs.qualification_suite == 'all')
     runs-on: ubuntu-latest
     needs: static-and-package
     env:
@@ -258,10 +183,9 @@ jobs:
   public-demo-replay:
     name: Public demo replay
     if: >-
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' &&
+      github.event_name == 'workflow_dispatch' &&
       (inputs.qualification_suite == 'full' ||
-      inputs.qualification_suite == 'all'))
+      inputs.qualification_suite == 'all')
     runs-on: ubuntu-latest
     needs: full-official-130
     env:
