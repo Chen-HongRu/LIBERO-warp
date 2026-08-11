@@ -6,7 +6,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Protocol
 
 import cv2
 import matplotlib.cm as cm
@@ -222,6 +222,134 @@ def randomize_colors(count, bright=True):
     )
 
 
+class LiberoBackendSession(Protocol):
+    """Internal backend lifecycle used by the legacy-compatible wrappers."""
+
+    task: Any
+
+    def reset(self): ...
+
+    def step(self, action): ...
+
+    def seed(self, seed): ...
+
+    def check_success(self): ...
+
+    def get_sim_state(self): ...
+
+    def set_state(self, mujoco_state): ...
+
+    def reset_from_xml_string(self, xml_string): ...
+
+    def regenerate_obs_from_state(self, mujoco_state): ...
+
+    def close(self): ...
+
+
+class OfficialLiberoSession:
+    """Official robosuite task ownership behind the internal backend seam.
+
+    The robosuite task remains authoritative for camera observations, flattened
+    MuJoCo state, predicates, and controller state. This session only delegates
+    lifecycle operations and preserves LIBERO's legacy RNG behavior.
+    """
+
+    def __init__(
+        self,
+        *,
+        task_factory,
+        bddl_file_name,
+        robots,
+        controller,
+        task_kwargs,
+    ):
+        seed = task_kwargs.get("seed")
+        self._legacy_rng_state = None
+        caller_rng_state = None
+        if seed is not None:
+            caller_rng_state = np.random.get_state()
+            np.random.seed(seed)
+
+        controller_configs = suite.load_part_controller_config(
+            default_controller=controller
+        )
+        robot_type = robots[0] if isinstance(robots, list) else robots
+        controller_configs = refactor_composite_controller_config(
+            controller_configs, robot_type, ["right"]
+        )
+
+        try:
+            self.task = task_factory(
+                bddl_file_name,
+                robots=robots,
+                controller_configs=controller_configs,
+                **task_kwargs,
+            )
+        finally:
+            if caller_rng_state is not None:
+                self._legacy_rng_state = np.random.get_state()
+                np.random.set_state(caller_rng_state)
+
+    def step(self, action):
+        return self.task.step(action)
+
+    def reset(self):
+        while True:
+            try:
+                return self._reset_with_legacy_rng()
+            except RandomizationError:
+                continue
+
+    def _reset_with_legacy_rng(self):
+        legacy_rng_state = self._legacy_rng_state
+        if legacy_rng_state is None:
+            return self.task.reset()
+        caller_rng_state = np.random.get_state()
+        np.random.set_state(legacy_rng_state)
+        try:
+            return self.task.reset()
+        finally:
+            self._legacy_rng_state = np.random.get_state()
+            np.random.set_state(caller_rng_state)
+
+    def seed(self, seed):
+        self.task.seed = seed
+        self.task.rng = np.random.default_rng(seed)
+        if seed is None:
+            self._legacy_rng_state = None
+            return
+        caller_rng_state = np.random.get_state()
+        try:
+            np.random.seed(seed)
+            self._legacy_rng_state = np.random.get_state()
+        finally:
+            np.random.set_state(caller_rng_state)
+
+    def check_success(self):
+        return self.task._check_success()
+
+    def get_sim_state(self):
+        return self.task.sim.get_state().flatten()
+
+    def set_state(self, mujoco_state):
+        self.task.sim.set_state_from_flattened(mujoco_state)
+
+    def reset_from_xml_string(self, xml_string):
+        self.task.reset_from_xml_string(xml_string)
+
+    def regenerate_obs_from_state(self, mujoco_state):
+        self.set_state(mujoco_state)
+        self.task.sim.forward()
+        self.check_success()
+        self.task._post_process()
+        self.task._update_observables(force=True)
+        return self.task._get_observations()
+
+    def close(self):
+        self.task.close()
+        del self.task
+
+
 class ControlEnv:
     def __init__(
         self,
@@ -264,61 +392,43 @@ class ControlEnv:
             f"[error] {bddl_file_name} does not exist!"
         )
 
-        # LIBERO's legacy BDDL placement samplers use ``numpy.random``'s
-        # process-global RandomState, while robosuite 1.5.2 owns a separate
-        # Generator. Scope a saved global state to this wrapper so a seeded
-        # environment is deterministic without leaking its seed to callers or
-        # to other environments.
-        seed = kwargs.get("seed")
-        self._legacy_rng_state = None
-        caller_rng_state = None
-        if seed is not None:
-            caller_rng_state = np.random.get_state()
-            np.random.seed(seed)
-
-        controller_configs = suite.load_part_controller_config(
-            default_controller=controller
-        )
-        robot_type = robots[0] if isinstance(robots, list) else robots
-        controller_configs = refactor_composite_controller_config(
-            controller_configs, robot_type, ["right"]
-        )
-
         problem_info = BDDLUtils.get_problem_info(bddl_file_name)
         self.problem_name = problem_info["problem_name"]
         self.domain_name = problem_info["domain_name"]
         self.language_instruction = problem_info["language_instruction"]
-        try:
-            self.env = TASK_MAPPING[self.problem_name](
-                bddl_file_name,
-                robots=robots,
-                controller_configs=controller_configs,
-                gripper_types=gripper_types,
-                initialization_noise=initialization_noise,
-                use_camera_obs=use_camera_obs,
-                has_renderer=has_renderer,
-                has_offscreen_renderer=has_offscreen_renderer,
-                render_camera=render_camera,
-                render_collision_mesh=render_collision_mesh,
-                render_visual_mesh=render_visual_mesh,
-                render_gpu_device_id=render_gpu_device_id,
-                control_freq=control_freq,
-                horizon=horizon,
-                ignore_done=ignore_done,
-                hard_reset=hard_reset,
-                camera_names=camera_names,
-                camera_heights=camera_heights,
-                camera_widths=camera_widths,
-                camera_depths=camera_depths,
-                camera_segmentations=camera_segmentations,
-                renderer=renderer,
-                renderer_config=renderer_config,
-                **kwargs,
-            )
-        finally:
-            if caller_rng_state is not None:
-                self._legacy_rng_state = np.random.get_state()
-                np.random.set_state(caller_rng_state)
+        task_kwargs = {
+            "gripper_types": gripper_types,
+            "initialization_noise": initialization_noise,
+            "use_camera_obs": use_camera_obs,
+            "has_renderer": has_renderer,
+            "has_offscreen_renderer": has_offscreen_renderer,
+            "render_camera": render_camera,
+            "render_collision_mesh": render_collision_mesh,
+            "render_visual_mesh": render_visual_mesh,
+            "render_gpu_device_id": render_gpu_device_id,
+            "control_freq": control_freq,
+            "horizon": horizon,
+            "ignore_done": ignore_done,
+            "hard_reset": hard_reset,
+            "camera_names": camera_names,
+            "camera_heights": camera_heights,
+            "camera_widths": camera_widths,
+            "camera_depths": camera_depths,
+            "camera_segmentations": camera_segmentations,
+            "renderer": renderer,
+            "renderer_config": renderer_config,
+            **kwargs,
+        }
+        self._session: LiberoBackendSession = OfficialLiberoSession(
+            task_factory=TASK_MAPPING[self.problem_name],
+            bddl_file_name=bddl_file_name,
+            robots=robots,
+            controller=controller,
+            task_kwargs=task_kwargs,
+        )
+        # Preserve the legacy public escape hatch while session ownership stays
+        # internal and replaceable.
+        self.env = self._session.task
         self._backend_info = _official_backend_info(
             requested_backend=requested_backend,
             selection_source=selection_source,
@@ -334,17 +444,20 @@ class ControlEnv:
         return self.env.obj_of_interest
 
     def step(self, action):
-        return self.env.step(action)
+        return self._session.step(action)
 
     def reset(self):
+        session = getattr(self, "_session", None)
+        if session is not None:
+            return session.reset()
         while True:
             try:
-                return self._reset_with_legacy_rng()
+                return self.env.reset()
             except RandomizationError:
                 continue
 
     def check_success(self):
-        return self.env._check_success()
+        return self._session.check_success()
 
     @property
     def _visualizations(self):
@@ -359,7 +472,7 @@ class ControlEnv:
         return self.env.sim
 
     def get_sim_state(self):
-        return self.env.sim.get_state().flatten()
+        return self._session.get_sim_state()
 
     def _post_process(self):
         return self.env._post_process()
@@ -368,10 +481,10 @@ class ControlEnv:
         self.env._update_observables(force=force)
 
     def set_state(self, mujoco_state):
-        self.env.sim.set_state_from_flattened(mujoco_state)
+        self._session.set_state(mujoco_state)
 
     def reset_from_xml_string(self, xml_string):
-        self.env.reset_from_xml_string(xml_string)
+        self._session.reset_from_xml_string(xml_string)
 
     def seed(self, seed):
         """Reset the robosuite 1.5.2 environment RNG to ``seed``.
@@ -381,45 +494,22 @@ class ControlEnv:
         this legacy wrapper usable without treating that attribute as a
         method.
         """
-        self.env.seed = seed
-        self.env.rng = np.random.default_rng(seed)
-        if seed is None:
-            self._legacy_rng_state = None
-            return
-        caller_rng_state = np.random.get_state()
-        try:
-            np.random.seed(seed)
-            self._legacy_rng_state = np.random.get_state()
-        finally:
-            np.random.set_state(caller_rng_state)
+        self._session.seed(seed)
 
     def _reset_with_legacy_rng(self):
         """Reset with this environment's saved BDDL placement RNG state."""
-        legacy_rng_state = getattr(self, "_legacy_rng_state", None)
-        if legacy_rng_state is None:
-            return self.env.reset()
-        caller_rng_state = np.random.get_state()
-        np.random.set_state(legacy_rng_state)
-        try:
-            return self.env.reset()
-        finally:
-            self._legacy_rng_state = np.random.get_state()
-            np.random.set_state(caller_rng_state)
+        return self._session._reset_with_legacy_rng()
 
     def set_init_state(self, init_state):
         return self.regenerate_obs_from_state(init_state)
 
     def regenerate_obs_from_state(self, mujoco_state):
-        self.set_state(mujoco_state)
-        self.env.sim.forward()
-        self.check_success()
-        self._post_process()
-        self._update_observables(force=True)
-        return self.env._get_observations()
+        return self._session.regenerate_obs_from_state(mujoco_state)
 
     def close(self):
-        self.env.close()
+        self._session.close()
         del self.env
+        del self._session
 
 
 class OffScreenRenderEnv(ControlEnv):

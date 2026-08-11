@@ -466,7 +466,7 @@ Current local Python 3.12.5 core-profile evidence:
   CUDA packages.
 
 The schema-v2 manifest generated from the final local source has SHA-256
-`49d979e0a4abca23d84b27252db24b92f7ab6c6dc79bf5b1cb864ae2db29764e`.
+`183effb79a24c959055e12a082ecf3e161207b3460ee3af48e6c4cb0183c0113`.
 It records 97 target versus 111 current modules, 1002 target versus 1004 current
 source-data files, and 4 target versus 5 current console scripts. All target
 module, data, and console-script paths are present; module coverage is 73 static
@@ -488,3 +488,13 @@ frozen G1 gate for personal use. A positive all-module `legacy` import and the
 130-task/public-demo qualification remain optional release work; the observed
 `libero.lifelong.algos` native-import crash is recorded but is not a blocker for
 the official/Warp runtime path.
+
+## 10. G2 backend session seam
+
+`ControlEnv` now constructs an internal `OfficialLiberoSession` and delegates
+reset, step, RNG, state, XML reload, observation regeneration, and close through
+the `LiberoBackendSession` contract. The legacy `env` attribute remains the same
+robosuite task object, so existing official callers keep their current behavior.
+The robosuite task remains authoritative for cameras, state, predicates, and
+controller state. Local Python 3.12 evidence passes the 8 static G1 wrapper tests,
+15 migration/MuJoCo compatibility tests, and the real headless official golden.

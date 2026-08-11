@@ -166,6 +166,9 @@ def test_default_official_backend_preserves_legacy_constructor_and_returns(
     wrapper = env_wrapper.ControlEnv(str(bddl_path), has_offscreen_renderer=False)
 
     task = _FakeOfficialTask.constructed[-1]
+    assert isinstance(wrapper._session, env_wrapper.OfficialLiberoSession)
+    assert wrapper._session.task is task
+    assert wrapper.env is task
     assert "backend" not in task.kwargs
     assert wrapper.backend_info.requested_backend == "official"
     assert wrapper.backend_info.actual_backend == "official"
@@ -225,6 +228,7 @@ def test_default_official_backend_preserves_legacy_constructor_and_returns(
     wrapper.close()
     assert task.closed
     assert not hasattr(wrapper, "env")
+    assert not hasattr(wrapper, "_session")
 
 
 @pytest.mark.static

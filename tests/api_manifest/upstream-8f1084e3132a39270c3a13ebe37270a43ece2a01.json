@@ -1254,7 +1254,7 @@
       "python_requires": ">=3.12,<3.13",
       "version": "0.1.0"
     },
-    "head_commit": "1530ed80dd2ee185572d73c828058b92ed851d04",
+    "head_commit": "5b7cde40a3fed136ded1b929db805c7c141f117b",
     "modules": {
       "benchmark_scripts": {
         "declared_symbols": {},
@@ -8196,6 +8196,60 @@
             "kind": "assignment",
             "value": "8f1084e3132a39270c3a13ebe37270a43ece2a01"
           },
+          "LiberoBackendSession": {
+            "bases": [
+              "Protocol"
+            ],
+            "kind": "class",
+            "members": {
+              "check_success": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "close": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "get_sim_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "regenerate_obs_from_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, mujoco_state)"
+              },
+              "reset": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "reset_from_xml_string": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, xml_string)"
+              },
+              "seed": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, seed)"
+              },
+              "set_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, mujoco_state)"
+              },
+              "step": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, action)"
+              }
+            },
+            "signature": "()"
+          },
           "Mapping": {
             "kind": "symbol_import",
             "origin_module": "collections.abc",
@@ -8219,6 +8273,73 @@
               }
             },
             "signature": "(self, **kwargs)"
+          },
+          "OfficialLiberoSession": {
+            "bases": [],
+            "kind": "class",
+            "members": {
+              "__init__": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, *, task_factory, bddl_file_name, robots, controller, task_kwargs)"
+              },
+              "_reset_with_legacy_rng": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "check_success": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "close": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "get_sim_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "regenerate_obs_from_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, mujoco_state)"
+              },
+              "reset": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "reset_from_xml_string": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, xml_string)"
+              },
+              "seed": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, seed)"
+              },
+              "set_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, mujoco_state)"
+              },
+              "step": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, action)"
+              }
+            },
+            "signature": "(self, *, task_factory, bddl_file_name, robots, controller, task_kwargs)"
+          },
+          "Protocol": {
+            "kind": "symbol_import",
+            "origin_module": "typing",
+            "origin_name": "Protocol"
           },
           "RandomizationError": {
             "kind": "symbol_import",
@@ -8536,6 +8657,60 @@
             "kind": "assignment",
             "value": "8f1084e3132a39270c3a13ebe37270a43ece2a01"
           },
+          "LiberoBackendSession": {
+            "bases": [
+              "Protocol"
+            ],
+            "kind": "class",
+            "members": {
+              "check_success": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "close": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "get_sim_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "regenerate_obs_from_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, mujoco_state)"
+              },
+              "reset": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "reset_from_xml_string": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, xml_string)"
+              },
+              "seed": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, seed)"
+              },
+              "set_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, mujoco_state)"
+              },
+              "step": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, action)"
+              }
+            },
+            "signature": "()"
+          },
           "Mapping": {
             "kind": "symbol_import",
             "origin_module": "collections.abc",
@@ -8559,6 +8734,73 @@
               }
             },
             "signature": "(self, **kwargs)"
+          },
+          "OfficialLiberoSession": {
+            "bases": [],
+            "kind": "class",
+            "members": {
+              "__init__": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, *, task_factory, bddl_file_name, robots, controller, task_kwargs)"
+              },
+              "_reset_with_legacy_rng": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "check_success": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "close": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "get_sim_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "regenerate_obs_from_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, mujoco_state)"
+              },
+              "reset": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self)"
+              },
+              "reset_from_xml_string": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, xml_string)"
+              },
+              "seed": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, seed)"
+              },
+              "set_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, mujoco_state)"
+              },
+              "step": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, action)"
+              }
+            },
+            "signature": "(self, *, task_factory, bddl_file_name, robots, controller, task_kwargs)"
+          },
+          "Protocol": {
+            "kind": "symbol_import",
+            "origin_module": "typing",
+            "origin_name": "Protocol"
           },
           "RandomizationError": {
             "kind": "symbol_import",
@@ -8686,7 +8928,7 @@
         },
         "is_package": false,
         "path": "libero/libero/envs/env_wrapper.py",
-        "sha256": "2842735719e72d62d2132717c4941259bd6acef323b0fe4eb04842047d4cd675",
+        "sha256": "a4993d9ed7180ef267cdc7d4bec9c9c5f7068e9e0a71b44b7e58249e3ca0e1b2",
         "star_imports": []
       },
       "libero.libero.envs.mujoco3_compat": {
