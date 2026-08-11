@@ -1,6 +1,6 @@
 # LIBERO-Warp G0 API compatibility matrix
 
-Status: `G0 frozen by user / G1 implementation complete, external qualification pending`
+Status: `G0 frozen / G1 and G3 complete / G4.1 transitional action seam validated`
 
 Date: 2026-08-11 (Asia/Shanghai)
 
@@ -519,8 +519,8 @@ preserves the original single-environment NumPy observation-dict API. G3 provide
   state read/write roundtrip;
 - state and render-exact snapshot reads;
 - idempotent close and explicit closed-object failures;
-- clear capability errors for policy `step()`, XML reset, and post-construction
-  reseeding until their later milestones.
+- clear capability errors for XML reset and post-construction reseeding until
+  their later milestones.
 
 There is no official physics or rendering fallback in returned visuals or state.
 The exact compiler-owned official task is explicitly retained as a CPU shadow at
@@ -553,9 +553,44 @@ The project runtime remains qualified on Python 3.12 by the G1 workflow; this
 fast GPU smoke reused the available Python 3.10 CUDA environment and is recorded
 as such rather than presented as a second Python qualification.
 
-The regenerated schema-v2 manifest SHA-256 is
-`5b29d9267fe0c8f3d56063790cfe83db0c3f2f0599bfc1e32ec59ec00d89d9e5`.
+The regenerated schema-v2 manifest SHA-256 after G4.1 is
+`3c83efb716b359aee24f970612af1232bb8bb8b395de0963726331a2a7c4d1b8`.
 
-G4 remains responsible for the real 7-D `OSC_POSE` action path. G5 remains
-responsible for device-native full observable cadence, formal private `sim`
-proxy behavior, `DemoRenderEnv`, and complete downstream drop-in qualification.
+## 12. G4.1 transitional N=1 `OSC_POSE` action seam
+
+The first runnable public action seam is implemented without exposing raw
+actuator controls to callers. `WarpBatchEnv.step()` accepts only finite batched
+`[1, 7]` policy actions, clips them to `[-1, 1]`, and the legacy
+`OffScreenRenderEnv(..., backend="warp")` path accepts the original unbatched
+`[7]` action. Robosuite 1.5.2 is currently the authoritative CPU controller
+shadow: it advances the composite `OSC_POSE` controller and emits one actuator
+control row for each of the 25 physics substeps. MJWarp replays that private
+sequence, owns the resulting state and visuals, and then synchronizes the CPU
+shadow for reward, predicate, and subsequent controller state.
+
+The public provenance is explicit rather than presented as GPU-native:
+
+- `BackendInfo.build["controller"] == "robosuite-cpu-shadow"`;
+- each `StepBatch.info["controller_backend"]` records the same identity;
+- returned observations are cloned CUDA snapshots, so later render/physics
+  buffer reuse cannot mutate earlier observations;
+- reward, success termination, and horizon truncation are recomputed from the
+  Warp result and synchronized task state.
+
+AutoDL evidence on the same RTX 4090 D stack passed the complete opt-in Warp
+group: `8 passed, 16 deselected` in 67.95 seconds. The action-specific coverage
+includes exact clipping equivalence, action validation, a three-step nonzero
+pilot rollout, horizon/reward/predicate checks, and one zero-action step on
+`libero_object`, `libero_goal`, and `libero_10`. The strict controlled arm and
+gripper velocity gate is `5e-3`; the observed `libero_10` controlled-DOF maximum
+was about `1.2e-5`. A separate passive-object contact boundary permits at most
+`0.1` instantaneous velocity error while requiring full pose error at most
+`1e-3`; the measured maximum was about `0.0874` on
+`tomato_sauce_1_joint0`.
+
+This is G4.1, not completion of G4. The remaining G4 work is a Warp-native OSC
+controller, demonstration-derived teacher-forced suffix validation, and
+contact/orientation/grasp/articulated-object task-success qualification. G5
+remains responsible for device-native full observable cadence, formal private
+`sim` proxy behavior, `DemoRenderEnv`, and complete downstream drop-in
+qualification.

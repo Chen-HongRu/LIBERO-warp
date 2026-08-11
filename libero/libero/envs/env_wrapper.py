@@ -40,7 +40,7 @@ _OFFICIAL_CAPABILITIES = frozenset(
         "step_osc_pose_7d",
     }
 )
-_WARP_G3_CAPABILITIES = frozenset(
+_WARP_CAPABILITIES = frozenset(
     {
         "metric_depth",
         "predicate_success",
@@ -50,6 +50,7 @@ _WARP_G3_CAPABILITIES = frozenset(
         "single_env_numpy_api",
         "state_flattened_read",
         "state_flattened_write",
+        "step_osc_pose_7d",
     }
 )
 
@@ -195,7 +196,7 @@ def _warp_backend_info(
         requested_backend=requested_backend,
         selection_source=selection_source,
         actual_backend="warp",
-        capabilities=_WARP_G3_CAPABILITIES,
+        capabilities=_WARP_CAPABILITIES,
         libero_warp_version=_distribution_version("libero-warp"),
         libero_compat_target=LIBERO_COMPAT_TARGET,
         dependency_versions=_dependency_versions(),
@@ -209,6 +210,7 @@ def _warp_backend_info(
         build=MappingProxyType(
             {
                 "cuda": torch.version.cuda,
+                "controller": "robosuite-cpu-shadow",
                 "platform": platform.platform(),
                 "python": platform.python_version(),
                 "python_implementation": platform.python_implementation(),
@@ -478,12 +480,12 @@ def _warp_camera_configs(task_kwargs: Mapping[str, Any]):
 
 
 class WarpLiberoSession:
-    """N=1 legacy NumPy wrapper over the G3 CUDA reset/render runtime.
+    """N=1 legacy NumPy wrapper over the CUDA Warp compatibility runtime.
 
     Warp owns the returned visual and flattened physics state. The exact
-    compiler-owned official task is kept synchronized only at reset/state-write
-    boundaries to provide nonvisual observables, predicates, and legacy read
-    attributes. Policy actions, XML reload, and reseeding remain fail-closed.
+    compiler-owned official task supplies the transitional CPU controller shadow
+    and is synchronized at reset, state-write, and step boundaries. XML reload
+    and post-construction reseeding remain fail-closed.
     """
 
     def __init__(
@@ -511,7 +513,7 @@ class WarpLiberoSession:
                 operation="construct ControlEnv",
                 backend="warp",
                 capability="step_osc_pose_7d",
-                replacement="controller='OSC_POSE' (step remains unavailable in G3)",
+                replacement="controller='OSC_POSE' for the G4.1 action path",
             )
         if (
             not task_kwargs["use_camera_obs"]
@@ -561,12 +563,18 @@ class WarpLiberoSession:
         return self._runtime.legacy_observation()
 
     def step(self, action):
-        del action
-        raise UnsupportedBackendOperation(
-            operation="step",
-            backend="warp",
-            capability="step_osc_pose_7d",
-            replacement='backend="official" until the G4 Warp OSC slice',
+        value = np.asarray(action)
+        if value.shape != (7,):
+            raise ValueError(
+                f"Warp legacy actions must have shape [7]; got {list(value.shape)}."
+            )
+        step = self._runtime.step(value[None])
+        done = bool(step.terminated.item() or step.truncated.item())
+        return (
+            self._runtime.legacy_observation(),
+            float(step.reward.item()),
+            done,
+            dict(step.info),
         )
 
     def seed(self, seed):

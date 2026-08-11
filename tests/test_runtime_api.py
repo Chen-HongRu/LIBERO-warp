@@ -425,7 +425,7 @@ def test_warp_runtime_n1_reset_render_state_and_close_contract() -> None:
     """Exercise the smallest useful public Warp runtime on a real CUDA host."""
     if not torch.cuda.is_available():
         pytest.fail("LIBERO_RUN_WARP_GPU=1 was set, but CUDA is unavailable")
-    CameraConfig, EnvConfig, ObservationBatch, _, make_env = _runtime_api()
+    CameraConfig, EnvConfig, ObservationBatch, StepBatch, make_env = _runtime_api()
     config = EnvConfig(
         suite="libero_spatial",
         task_index=0,
@@ -490,8 +490,11 @@ def test_warp_runtime_n1_reset_render_state_and_close_contract() -> None:
         snapshot = env.get_render_exact_state()
         assert snapshot.state.device == env.device
         assert snapshot.sim_time.device == env.device
-        with pytest.raises(NotImplementedError, match="OSC_POSE"):
-            env.step(torch.zeros((1, 7), device=env.device))
+        step = env.step(torch.zeros((1, 7), device=env.device))
+        assert isinstance(step, StepBatch)
+        assert step.observation.state.device == env.device
+        assert step.reward.device == env.device
+        assert step.info["controller_backend"] == "robosuite-cpu-shadow"
     finally:
         env.close()
         env.close()
@@ -526,7 +529,7 @@ def test_legacy_offscreen_env_warp_reset_numpy_dict_and_capabilities() -> None:
             "physics": "mujoco-warp",
             "render": "cuda:0",
         }
-        assert "step_osc_pose_7d" not in env.backend_info.capabilities
+        assert "step_osc_pose_7d" in env.backend_info.capabilities
         observation = env.reset()
         assert isinstance(observation, dict)
         expected_visuals = {
@@ -550,10 +553,109 @@ def test_legacy_offscreen_env_warp_reset_numpy_dict_and_capabilities() -> None:
         assert isinstance(restored, dict)
         np.testing.assert_allclose(env.get_sim_state(), state, rtol=0.0, atol=0.0)
         assert env.check_success() is bool(env.env._check_success())
-        with pytest.raises(UnsupportedBackendOperation, match="step_osc_pose_7d"):
-            env.step(np.zeros(7, dtype=np.float32))
+        step_observation, reward, done, info = env.step(np.zeros(7, dtype=np.float32))
+        assert isinstance(step_observation, dict)
+        assert isinstance(reward, float)
+        assert isinstance(done, bool)
+        assert info["controller_backend"] == "robosuite-cpu-shadow"
         with pytest.raises(UnsupportedBackendOperation, match="model_xml_reset"):
             env.reset_from_xml_string(env.sim.model.get_xml())
+    finally:
+        env.close()
+
+
+@pytest.mark.warp_gpu
+def test_warp_hybrid_osc_one_step_and_short_rollout_match_controller_reference() -> (
+    None
+):
+    """Freeze the G4 public action and 25-substep CPU-controller contract."""
+    if not torch.cuda.is_available():
+        pytest.fail("LIBERO_RUN_WARP_GPU=1 was set, but CUDA is unavailable")
+    CameraConfig, EnvConfig, _, StepBatch, make_env = _runtime_api()
+    env = make_env(
+        EnvConfig(
+            suite="libero_spatial",
+            task_index=0,
+            cameras=(CameraConfig("agentview", 28, 36),),
+            backend="warp",
+            num_worlds=1,
+            horizon=3,
+            control_freq=20,
+            seed=0,
+        )
+    )
+    actions = (
+        np.zeros((1, 7), dtype=np.float32),
+        np.array(
+            [[0.05, -0.03, 0.02, 0.01, -0.02, 0.03, -1.0]],
+            dtype=np.float32,
+        ),
+        np.array(
+            [[-0.04, 0.02, -0.01, -0.02, 0.01, -0.03, 1.0]],
+            dtype=np.float32,
+        ),
+    )
+    try:
+        env.reset()
+        env.step(np.full((1, 7), 2.0, dtype=np.float32))
+        saturated_controls = env._last_controller_reference["ctrl"].copy()
+        env.reset()
+        env.step(np.ones((1, 7), dtype=np.float32))
+        np.testing.assert_allclose(
+            env._last_controller_reference["ctrl"],
+            saturated_controls,
+            rtol=0.0,
+            atol=0.0,
+        )
+
+        reset = env.reset()
+        reset_rgb = reset.rgb["agentview"].clone()
+        with pytest.raises(ValueError, match=r"shape \[1, 7\]"):
+            env.step(np.zeros(7, dtype=np.float32))
+        with pytest.raises(ValueError, match="finite"):
+            env.step(np.full((1, 7), np.nan, dtype=np.float32))
+
+        qpos_errors = []
+        qvel_errors = []
+        for index, action in enumerate(actions):
+            step = env.step(action)
+            assert isinstance(step, StepBatch)
+            assert step.info["controller_backend"] == "robosuite-cpu-shadow"
+            assert step.observation.state.is_cuda
+            assert step.reward.is_cuda
+            assert step.terminated.is_cuda
+            assert step.truncated.is_cuda
+            assert step.observation.sim_time.item() == pytest.approx(
+                (index + 1) / 20.0, abs=1e-6
+            )
+            reference = env._last_controller_reference
+            assert reference is not None
+            assert reference["ctrl"].shape == (
+                env._spike.compiled.metadata.control_substeps,
+                env._spike.compiled.metadata.nu,
+            )
+            assert np.isfinite(reference["ctrl"]).all()
+            readout = env._spike.physics_readout()
+            qpos_errors.append(
+                float(
+                    np.max(np.abs(readout["qpos"][0].cpu().numpy() - reference["qpos"]))
+                )
+            )
+            qvel_errors.append(
+                float(
+                    np.max(np.abs(readout["qvel"][0].cpu().numpy() - reference["qvel"]))
+                )
+            )
+            assert step.terminated.item() is env.check_success()
+            assert step.reward.item() == float(env.check_success())
+            assert step.truncated.item() is (index == len(actions) - 1)
+
+        assert qpos_errors[0] <= 1e-5
+        assert qvel_errors[0] <= 1e-4
+        assert max(qpos_errors) <= 1e-3
+        assert max(qvel_errors) <= 5e-3
+        assert reset.sim_time.item() == 0.0
+        assert torch.equal(reset.rgb["agentview"], reset_rgb)
     finally:
         env.close()
 
@@ -627,6 +729,46 @@ def test_warp_reset_oracle_spans_suites_scenes_and_camera_modalities(
             legacy_segmentation = legacy[f"{name}_segmentation_{segmentation}"]
             assert legacy_segmentation.shape == (height, width, 1)
             assert legacy_segmentation.dtype == np.int32
+
+        step = env.step(np.zeros((1, 7), dtype=np.float32))
+        reference = env._last_controller_reference
+        readout = env._spike.physics_readout()
+        qpos_error = float(
+            np.max(np.abs(readout["qpos"][0].cpu().numpy() - reference["qpos"]))
+        )
+        qvel_delta = np.abs(readout["qvel"][0].cpu().numpy() - reference["qvel"])
+        max_qvel_index = int(np.argmax(qvel_delta))
+        model = env._spike.compiled.model
+        max_qvel_joint = model.joint(int(model.dof_jntid[max_qvel_index])).name
+        robot = official._env.env.robots[0]
+        controlled_qvel_indices = np.asarray(
+            [
+                *robot._ref_joint_vel_indexes,
+                *(
+                    index
+                    for indices in robot._ref_gripper_joint_vel_indexes.values()
+                    for index in indices
+                ),
+            ],
+            dtype=np.int64,
+        )
+        passive_qvel_indices = np.setdiff1d(
+            np.arange(model.nv), controlled_qvel_indices
+        )
+        controlled_qvel_error = float(np.max(qvel_delta[controlled_qvel_indices]))
+        passive_qvel_error = float(np.max(qvel_delta[passive_qvel_indices]))
+        assert qpos_error <= 1e-3
+        assert controlled_qvel_error <= 5e-3
+        # MJWarp and MuJoCo may resolve a resting free-object contact to
+        # different instantaneous velocities while its pose remains aligned.
+        # Keep that known physics boundary separate from the strict robot OSC
+        # check instead of hiding it in one global tolerance.
+        assert passive_qvel_error <= 1e-1, (
+            f"max passive qvel error {passive_qvel_error} at dof {max_qvel_index} "
+            f"({max_qvel_joint})"
+        )
+        assert step.terminated.item() is env.check_success()
+        assert step.reward.item() == float(env.check_success())
     finally:
         env.close()
 

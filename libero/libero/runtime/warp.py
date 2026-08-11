@@ -1,8 +1,8 @@
 """Minimal MJWarp runtime plus the retained M1 benchmark runner.
 
-The public runtime intentionally stops before policy-action OSC support.  It
-does provide the useful reset / state / render loop on CUDA so applications can
-start consuming the Warp backend without waiting for action continuation.
+The public runtime provides reset / state / render on CUDA and a transitional
+N=1 policy-action seam. Robosuite currently advances the authoritative OSC
+controller state on CPU while MJWarp replays the resulting actuator controls.
 """
 
 from __future__ import annotations
@@ -29,15 +29,15 @@ from libero.libero.warp import MJWarpSpike
 
 
 class WarpBatchEnv:
-    """Single-world CUDA reset / state / render runtime for G3.
+    """Single-world CUDA runtime with a transitional CPU OSC controller shadow.
 
     The default reset uses the compiler's first trusted LIBERO init state;
     callers may also provide any finite flattened FULLPHYSICS state with the
     exact model width. Visuals and MuJoCo state come from MJWarp.
     Proprioception is sampled by the official source environment at reset time
     and uploaded once; there is no CPU rendering fallback in the returned
-    observation. Policy actions remain unavailable until the OSC controller is
-    implemented for Warp.
+    observation. Policy actions use the exact robosuite 1.5.2 controller state
+    machine on CPU while Warp remains authoritative for physics and rendering.
     """
 
     def __init__(self, config: EnvConfig) -> None:
@@ -49,6 +49,7 @@ class WarpBatchEnv:
         self._closed = False
         self._last_proprio: torch.Tensor | None = None
         self._last_observation: ObservationBatch | None = None
+        self._last_controller_reference: dict[str, np.ndarray] | None = None
         compiled = TaskCompiler().compile(config)
         spike: MJWarpSpike | None = None
         try:
@@ -102,16 +103,56 @@ class WarpBatchEnv:
         self._last_proprio = official_observation.proprio.to(
             device=self.device, dtype=torch.float32
         )
+        self._last_controller_reference = None
         self._last_observation = self._make_observation()
         return self._last_observation
 
     def step(self, actions: torch.Tensor | np.ndarray) -> StepBatch:
-        """Reject policy actions until the Warp OSC controller is implemented."""
-        del actions
+        """Apply one real 7-D OSC action using the G4 CPU controller shadow.
+
+        Robosuite 1.5.2 remains authoritative for controller goal updates and
+        emits the final actuator control at each of the 25 MuJoCo substeps. Warp
+        replays that control sequence from the same public state, then the CPU
+        task is synchronized to the Warp result for observables and predicates.
+        Raw actuator controls never enter or leave this public method.
+        """
         self._ensure_open()
-        raise NotImplementedError(
-            "Warp policy step is not available yet: G3 supports reset/state/render; "
-            "OSC_POSE action-to-control continuation is the next runtime slice."
+        if self._last_observation is None:
+            raise RuntimeError("Call reset() before applying a Warp policy action.")
+        action = self._normalize_action(actions)
+        controls, official_done, official_info = self._capture_controller_controls(
+            action
+        )
+        control_tensor = (
+            torch.from_numpy(controls)
+            .to(device=self.device, dtype=torch.float32)
+            .unsqueeze(0)
+        )
+        self._spike.replay_ctrl(control_tensor)
+
+        official_env = self._spike.compiled.official_env
+        warp_state = self.get_state()[0].detach().to(device="cpu", dtype=torch.float64)
+        raw_observation = official_env._env.regenerate_obs_from_state(
+            warp_state.numpy()
+        )
+        official_env._last_raw_observation = raw_observation
+        self._last_proprio = official_env._proprio_tensor(raw_observation).to(
+            device=self.device, dtype=torch.float32
+        )
+        self._last_observation = self._make_observation()
+        success = bool(official_env._env.check_success())
+        reward = float(official_env._env.env.reward(action[0]))
+        truncated = bool(official_env._env.env.timestep >= self.config.horizon)
+        return StepBatch(
+            observation=self._last_observation,
+            reward=torch.tensor([reward], device=self.device, dtype=torch.float32),
+            terminated=torch.tensor([success], device=self.device, dtype=torch.bool),
+            truncated=torch.tensor([truncated], device=self.device, dtype=torch.bool),
+            info={
+                **dict(official_info),
+                "controller_backend": "robosuite-cpu-shadow",
+                "official_done": bool(official_done),
+            },
         )
 
     def get_state(self) -> torch.Tensor:
@@ -132,7 +173,7 @@ class WarpBatchEnv:
         return self._spike.physics_readout()["time"].reshape(-1)
 
     def get_render_exact_state(self) -> RenderExactState:
-        """Return a detached render snapshot; action continuation is unsupported."""
+        """Return a detached render snapshot without controller continuation state."""
         self._ensure_open()
         return RenderExactState(
             state=self.get_state().clone(), sim_time=self.get_sim_time().clone()
@@ -142,9 +183,9 @@ class WarpBatchEnv:
         """Synchronize the latest reset observation to the legacy NumPy dict.
 
         Warp is authoritative for every returned visual. The compiler-owned
-        official shadow contributes controller/task observables that G3 does not
-        yet derive on CUDA. This explicit compatibility conversion is outside
-        the native tensor path and never runs during a Warp physics step.
+        official shadow contributes controller/task observables that the Warp
+        path does not yet derive on CUDA. This explicit compatibility conversion
+        is outside the native tensor path.
         """
         self._ensure_open()
         if self._last_observation is None:
@@ -192,17 +233,23 @@ class WarpBatchEnv:
         self._closed = True
         self._last_proprio = None
         self._last_observation = None
+        self._last_controller_reference = None
         self._spike.close()
 
     def _make_observation(self) -> ObservationBatch:
         rendered = self._spike.render()
         return ObservationBatch(
-            rgb=rendered.rgb,
-            depth=rendered.depth,
-            segmentation=rendered.segmentation,
-            proprio=self.get_proprio(),
+            # Renderer and MJWarp readouts are reusable device views. Public
+            # observations are snapshots: a later step must not mutate an older
+            # frame merely because it reuses the same CUDA buffers.
+            rgb={name: value.clone() for name, value in rendered.rgb.items()},
+            depth={name: value.clone() for name, value in rendered.depth.items()},
+            segmentation={
+                name: value.clone() for name, value in rendered.segmentation.items()
+            },
+            proprio=self.get_proprio().clone(),
             state=self.get_state(),
-            sim_time=self.get_sim_time(),
+            sim_time=self.get_sim_time().clone(),
         )
 
     def _normalize_init_state(
@@ -238,6 +285,68 @@ class WarpBatchEnv:
                 f"init_state must contain {expected_width} values; got {value.numel()}."
             )
         return value.contiguous()
+
+    def _normalize_action(self, actions: torch.Tensor | np.ndarray) -> np.ndarray:
+        if isinstance(actions, torch.Tensor):
+            value = actions.detach().to(device="cpu").numpy()
+        elif isinstance(actions, np.ndarray):
+            value = actions
+        else:
+            raise TypeError("actions must be a torch.Tensor or numpy.ndarray.")
+        if value.shape != (1, 7):
+            raise ValueError(
+                f"Warp backend actions must have shape [1, 7]; got {list(value.shape)}."
+            )
+        if not (
+            np.issubdtype(value.dtype, np.integer)
+            or np.issubdtype(value.dtype, np.floating)
+        ):
+            raise TypeError("actions must have a real numeric dtype.")
+        if not np.isfinite(value).all():
+            raise ValueError("actions must contain only finite values.")
+        return np.clip(value, -1.0, 1.0).astype(np.float32, copy=False)
+
+    def _capture_controller_controls(
+        self, action: np.ndarray
+    ) -> tuple[np.ndarray, bool, Mapping[str, Any]]:
+        official_env = self._spike.compiled.official_env
+        raw_env = official_env._env
+        current_state = (
+            self.get_state()[0].detach().to(device="cpu", dtype=torch.float64)
+        )
+        raw_env.regenerate_obs_from_state(current_state.numpy())
+        sim = raw_env.sim
+        step_method_name = "step2" if raw_env.env.lite_physics else "step"
+        original_sim_step = getattr(sim, step_method_name)
+        captured: list[np.ndarray] = []
+
+        def record_final_ctrl(*args: Any, **kwargs: Any):
+            captured.append(np.asarray(sim.data.ctrl).copy())
+            return original_sim_step(*args, **kwargs)
+
+        setattr(sim, step_method_name, record_final_ctrl)
+        try:
+            _, _, official_done, official_info = raw_env.step(action[0])
+        finally:
+            setattr(sim, step_method_name, original_sim_step)
+        controls = np.asarray(captured)
+        expected_shape = (
+            self._spike.compiled.metadata.control_substeps,
+            self._spike.compiled.metadata.nu,
+        )
+        if controls.shape != expected_shape:
+            raise RuntimeError(
+                "OSC controller did not emit one actuator control per physics "
+                f"substep: got {controls.shape}, expected {expected_shape}."
+            )
+        data = raw_env.sim.data
+        self._last_controller_reference = {
+            "state": np.asarray(raw_env.get_sim_state()).reshape(-1).copy(),
+            "qpos": np.asarray(data.qpos).copy(),
+            "qvel": np.asarray(data.qvel).copy(),
+            "ctrl": controls.copy(),
+        }
+        return controls, bool(official_done), dict(official_info)
 
     def _legacy_visual(self, tensor: torch.Tensor) -> np.ndarray:
         value = tensor[0].detach().to(device="cpu").numpy()

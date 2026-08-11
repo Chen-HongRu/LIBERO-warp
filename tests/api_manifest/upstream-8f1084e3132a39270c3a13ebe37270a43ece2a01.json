@@ -1254,7 +1254,7 @@
       "python_requires": ">=3.12,<3.13",
       "version": "0.1.0"
     },
-    "head_commit": "db567b568ee0afcd9b21aeed290926807b5bcc59",
+    "head_commit": "229f61bc6898d488a59d8fc9d07c2cbec4c7ef7b",
     "modules": {
       "benchmark_scripts": {
         "declared_symbols": {},
@@ -8493,7 +8493,7 @@
           "_OFFICIAL_CAPABILITIES": {
             "kind": "assignment"
           },
-          "_WARP_G3_CAPABILITIES": {
+          "_WARP_CAPABILITIES": {
             "kind": "assignment"
           },
           "_canonical_task_identity": {
@@ -9104,7 +9104,7 @@
         },
         "is_package": false,
         "path": "libero/libero/envs/env_wrapper.py",
-        "sha256": "b713f0cb6758d03c6eacfcef4c864ca3b2cb4b9b068bb22508ea43a6f3b2545a",
+        "sha256": "e57173a42fcc9294d5f694fa206ddad4ab1b25630ca7fd5b3e11b556919f2474",
         "star_imports": []
       },
       "libero.libero.envs.mujoco3_compat": {
@@ -32597,6 +32597,11 @@
                 "kind": "method",
                 "signature": "(self, config: EnvConfig) -> None"
               },
+              "_capture_controller_controls": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, action: np.ndarray) -> tuple[np.ndarray, bool, Mapping[str, Any]]"
+              },
               "_ensure_open": {
                 "decorators": [],
                 "kind": "method",
@@ -32611,6 +32616,11 @@
                 "decorators": [],
                 "kind": "method",
                 "signature": "(self) -> ObservationBatch"
+              },
+              "_normalize_action": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, actions: torch.Tensor | np.ndarray) -> np.ndarray"
               },
               "_normalize_init_state": {
                 "decorators": [],
@@ -33078,6 +33088,11 @@
                 "kind": "method",
                 "signature": "(self, config: EnvConfig) -> None"
               },
+              "_capture_controller_controls": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, action: np.ndarray) -> tuple[np.ndarray, bool, Mapping[str, Any]]"
+              },
               "_ensure_open": {
                 "decorators": [],
                 "kind": "method",
@@ -33092,6 +33107,11 @@
                 "decorators": [],
                 "kind": "method",
                 "signature": "(self) -> ObservationBatch"
+              },
+              "_normalize_action": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, actions: torch.Tensor | np.ndarray) -> np.ndarray"
               },
               "_normalize_init_state": {
                 "decorators": [],
@@ -33207,7 +33227,7 @@
         },
         "is_package": false,
         "path": "libero/libero/runtime/warp.py",
-        "sha256": "fe355767a6946e6c0e303ce2860028312c3d0526bf49aefd23e322402e2ed196",
+        "sha256": "bc7c08b619a639eee037f39dcdd1c696c97886bdedcb16a224f74464d05a79f3",
         "star_imports": []
       },
       "libero.libero.utils": {

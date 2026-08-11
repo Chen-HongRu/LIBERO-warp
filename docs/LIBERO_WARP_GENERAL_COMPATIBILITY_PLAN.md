@@ -750,6 +750,23 @@ Hard gate：
 停止条件：若 GPU OSC 不能复现 LIBERO 行为，保持 Warp render/reset-only capability，不把它伪装成
 完整环境。
 
+当前实现状态（2026-08-11，G4.1 过渡切片）：
+
+- public runtime 已接受 `[1,7]`，legacy `OffScreenRenderEnv` 已接受原式 `[7]`；
+- action clipping、25 次 control decimation、reward/success/horizon 已接通；
+- robosuite 1.5.2 暂时作为 authoritative CPU controller shadow，MJWarp 只接收其内部生成的
+  actuator 序列；raw ctrl 不属于 public action API；
+- `BackendInfo.build.controller` 与每步 info 均明确标记
+  `robosuite-cpu-shadow`，不把它表述成 GPU-native controller；
+- AutoDL 完整 Warp 组 `8 passed, 16 deselected`，包含三步非零 pilot rollout 与
+  `libero_object`、`libero_goal`、`libero_10` 的一次 step；
+- 受控 arm/gripper DOF 仍使用严格速度误差门槛；`libero_10` 的已知较大速度差来自
+  `tomato_sauce_1_joint0` 被动物体接触求解，已与机器人控制误差分开记录。
+
+因此 G4.1 可以用于个人研究的 N=1 早期 rollout，但 G4 尚未完成。Warp-native OSC、真实
+demonstration teacher-forced suffix、contact/orientation/grasp/articulated-object task-success
+资格仍是后续 hard gate。
+
 ### G5：完整观测、wrapper 和 N=1 drop-in
 
 目标：普通下游把 backend 改成 Warp 后可直接运行。
