@@ -664,8 +664,8 @@ Hard gate：
 
 1. 恢复/重构必要 public import surface；
 2. 将旧训练、Torch tensor runtime 和 Warp GPU 依赖移入各自 optional
-   profiles，保持 core runtime 精简；以 Python 3.12 为主要开发版本，并只发布
-   通过 3.10/3.11/3.12 matrix 的解释器范围；
+   profiles，保持 core runtime 精简；按 2026-08-11 的用户决策，仅以 Python
+   3.12 作为开发、验证和发布解释器；
 3. 保持原 import paths、constructors、returns 和 exceptions；
 4. 加 `backend` 参数但默认 official；
 5. 加 `backend_info` 和 provenance，不改变数值行为；

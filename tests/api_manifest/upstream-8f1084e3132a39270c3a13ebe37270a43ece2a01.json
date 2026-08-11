@@ -1251,10 +1251,10 @@
           ]
         }
       },
-      "python_requires": ">=3.10,<3.13",
+      "python_requires": ">=3.12,<3.13",
       "version": "0.1.0"
     },
-    "head_commit": "d396f2daedce66b5e8bcc4b5765e3050686f213a",
+    "head_commit": "1530ed80dd2ee185572d73c828058b92ed851d04",
     "modules": {
       "benchmark_scripts": {
         "declared_symbols": {},

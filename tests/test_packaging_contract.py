@@ -59,7 +59,7 @@ def test_python_and_dependency_profiles_keep_accelerators_optional() -> None:
     with (REPOSITORY_ROOT / "pyproject.toml").open("rb") as project_file:
         project = tomllib.load(project_file)["project"]
 
-    assert project["requires-python"] == ">=3.10,<3.13"
+    assert project["requires-python"] == ">=3.12,<3.13"
     core_names = {
         requirement.split("==", maxsplit=1)[0].split(">=", maxsplit=1)[0]
         for requirement in project["dependencies"]

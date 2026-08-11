@@ -58,6 +58,13 @@ def test_manifest_is_complete_and_reproducible_from_git_objects():
     recorded = _manifest()
     regenerated = build_manifest(REPO_ROOT, recorded["compatibility_target"]["ref"])
 
+    recorded_head = recorded["current"]["head_commit"]
+    subprocess.run(
+        ["git", "merge-base", "--is-ancestor", recorded_head, "HEAD"],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+    regenerated["current"]["head_commit"] = recorded_head
     assert regenerated == recorded
     assert recorded["schema_version"] == 2
     assert recorded["generator_contract"] == {
@@ -370,8 +377,7 @@ def test_environment_contract_decouples_python_and_gpu_profiles():
     matrix = MATRIX_PATH.read_text()
 
     assert "Python 3.12" in matrix
-    assert "Candidate `>=3.10,<3.13`" in matrix
-    assert "`>=3.11,<3.13`" in matrix
+    assert "`>=3.12,<3.13`" in matrix
     assert "`>=2.4,<3`" in matrix
     assert "Never pin or install `nvidia-*` packages directly" in matrix
     assert "must not run a full `uv sync`" in matrix

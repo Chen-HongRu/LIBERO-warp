@@ -323,8 +323,8 @@ with these boundaries:
 | Concern | Frozen G0 decision | Required G1 proof |
 |---|---|---|
 | Primary development Python | Python 3.12 | Run static, import, wheel, and official smoke under 3.12 before changing release metadata |
-| Python support range | Candidate `>=3.10,<3.13`; 3.12 is primary, while 3.10/3.11 remain supported only if their matrix jobs pass | Separate 3.10, 3.11, and 3.12 jobs; publish only the versions that pass, rather than inheriting the old `>=3.11,<3.12` pin |
-| Manifest tooling | `>=3.11,<3.13`, because the generator uses stdlib `tomllib` | Saved manifest is byte-identical under local Python 3.11 and 3.12; keep this as a cross-version reproducibility test or pinned tooling job |
+| Python support range | `>=3.12,<3.13` | Qualify and publish Python 3.12 only |
+| Manifest tooling | Python 3.12 | Reproduce the saved manifest under the release interpreter |
 | Legacy/core LIBERO API | The official MuJoCo/robosuite backend is the compatibility baseline; no Torch, MJWarp, Warp, or CUDA installation requirement | Public import, benchmark, data, `OffScreenRenderEnv`, and NumPy/dict/tuple compatibility smoke in a core environment |
 | Official backend | Exact robosuite/MuJoCo versions remain qualification inputs; it must not require MJWarp or CUDA | Official golden and installed-wheel smoke with no CUDA packages installed |
 | Tensor runtime | Torch is an optional capability dependency, not a core dependency | Test the minimum supported Torch plus the current qualification profile; fail with an actionable extra-install error when absent |
@@ -343,7 +343,7 @@ The current AutoDL host supplies a working managed profile at
 CUDA available on an RTX 4090 D. Remote validation must create a source overlay
 that reuses this environment; it must not run a full `uv sync`, replace Torch, or
 download another CUDA stack unless a test demonstrates a concrete incompatibility.
-Python 3.12 release testing is a separate CPU/static/official matrix job and must
+Python 3.12 release testing is a separate CPU/static/official job and must
 not force rebuilding the AutoDL GPU environment.
 
 G1 dependency profiles are:
@@ -416,10 +416,10 @@ does not replace any target command.
 
 Only after this matrix is approved, G1 may touch:
 
-- `.python-version`, `pyproject.toml`, and `uv.lock` for the frozen Python matrix,
+- `.python-version`, `pyproject.toml`, and `uv.lock` for the frozen Python 3.12 profile,
   dependency profiles, package data, target CLIs, and optional extras;
-- `.github/workflows/m0-verification.yml` for the frozen 3.10/3.11/3.12 core
-  matrix, Python-3.12 official gates, and scheduled legacy-profile import gate;
+- `.github/workflows/m0-verification.yml` for the frozen Python 3.12 core and
+  official gates plus the scheduled legacy-profile import gate;
 - restored target files under `libero/configs/`, `libero/lifelong/`, `scripts/`,
   `benchmark_scripts/`, and `templates/`;
 - minimal eager-Torch removal in retained benchmark/utility modules so the
@@ -443,8 +443,8 @@ G1. The G1 hard gates remain independent and must pass before starting G2.
 ## 9. G1 implementation and qualification status
 
 The scoped G1 implementation is complete in the working tree. It is deliberately
-not marked freeze-ready, because the renderer-backed, legacy-extra, and
-cross-Python jobs still require actual green CI evidence.
+not marked freeze-ready, because the renderer-backed, legacy-extra, and Python
+3.12 jobs still require actual green CI evidence.
 
 Current local Python 3.12.5 core-profile evidence:
 
@@ -460,14 +460,13 @@ Current local Python 3.12.5 core-profile evidence:
 - the real default-official headless golden passes `1/1`, covering seeded reset,
   observations, flattened state restore, one zero-action step, reward, done, and
   info;
-- the final manifest is byte-identical under local Python 3.12.5 and the
-  isolated AutoDL Python 3.11.15 interpreter;
+- the final manifest is reproducible under the local Python 3.12.5 interpreter;
 - `uv lock --check` passes, and default `uv sync --dry-run` only proposes
   reinstalling the editable project rather than adding Torch, MJWarp, Warp, or
   CUDA packages.
 
 The schema-v2 manifest generated from the final local source has SHA-256
-`6e51bb2416b3508cd8ca3d854ed7930705bd867317d63dc9ef7d01624c3ca6cf`.
+`49d979e0a4abca23d84b27252db24b92f7ab6c6dc79bf5b1cb864ae2db29764e`.
 It records 97 target versus 111 current modules, 1002 target versus 1004 current
 source-data files, and 4 target versus 5 current console scripts. All target
 module, data, and console-script paths are present; module coverage is 73 static
@@ -475,7 +474,7 @@ compatible plus 24 recorded drift.
 
 The workflow now defines:
 
-- clean core/package jobs for Python 3.10, 3.11, and 3.12;
+- one clean core/package job for Python 3.12;
 - a Python 3.12 official pilot with OSMesa, including real instance, class, and
   element segmentation construction/reset/close fixtures;
 - a scheduled/manual Python 3.12 `legacy`-extra job that imports every frozen
@@ -483,7 +482,7 @@ The workflow now defines:
 - scheduled full official and public-demo jobs, with Torch isolated to the
   `tensor` profile.
 
-Remaining hard-gate evidence is external: all three Python jobs must actually
+Remaining hard-gate evidence is external: the Python 3.12 job must actually
 pass, the OSMesa renderer and three segmentation modes must run green, and the
 positive `legacy`-extra import job must run green. The AutoDL host is not used to
 paper over those gates: its existing Torch 2.13.0+cu130 satisfies the candidate

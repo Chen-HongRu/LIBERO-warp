@@ -7,7 +7,7 @@ name = "libero-warp"
 version = "0.1.0"
 description = "LIBERO tasks, assets, and official MuJoCo evaluation backend for LIBERO-warp"
 readme = "README.md"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.12,<3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
@@ -73,7 +73,6 @@ libero = ["configs/**/*.yaml", "templates/*"]
 [dependency-groups]
 dev = [
   "pytest>=8.3",
-  "tomli>=2; python_version < '3.11'",
 ]
 
 [tool.ruff]
