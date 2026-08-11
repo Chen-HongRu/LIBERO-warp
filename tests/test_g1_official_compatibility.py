@@ -421,13 +421,13 @@ def test_real_default_backend_headless_state_and_step_golden() -> None:
             assert set(observation) == set(metadata["reset_observation_arrays"])
             for key, array_name in metadata["reset_observation_arrays"].items():
                 expected = golden[array_name]
-                # Quaternion helper outputs are float32; allow one quantization step
-                # across platforms while keeping float64 physics arrays at 1e-9.
-                atol = (
-                    np.finfo(np.float32).eps if expected.dtype == np.float32 else 1e-9
-                )
+                # Object-state concatenates float32 quaternion helpers into float64
+                # arrays, so all observations allow one float32 quantization step.
                 np.testing.assert_allclose(
-                    observation[key], expected, rtol=0.0, atol=atol
+                    observation[key],
+                    expected,
+                    rtol=0.0,
+                    atol=np.finfo(np.float32).eps,
                 )
 
             state = env.get_sim_state()
@@ -442,11 +442,11 @@ def test_real_default_backend_headless_state_and_step_golden() -> None:
             assert set(step_observation) == set(metadata["step_observation_arrays"])
             for key, array_name in metadata["step_observation_arrays"].items():
                 expected = golden[array_name]
-                atol = (
-                    np.finfo(np.float32).eps if expected.dtype == np.float32 else 1e-9
-                )
                 np.testing.assert_allclose(
-                    step_observation[key], expected, rtol=0.0, atol=atol
+                    step_observation[key],
+                    expected,
+                    rtol=0.0,
+                    atol=np.finfo(np.float32).eps,
                 )
             np.testing.assert_allclose(
                 env.get_sim_state(), golden["step_state"], rtol=0.0, atol=1e-9
