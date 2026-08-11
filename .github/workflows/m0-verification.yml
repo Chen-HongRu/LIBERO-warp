@@ -208,6 +208,8 @@ jobs:
               subprocess.run(
                   [
                       sys.executable,
+                      "-X",
+                      "faulthandler",
                       "-c",
                       f"import importlib; importlib.import_module({module!r})",
                   ],
