@@ -190,8 +190,9 @@ jobs:
       - name: Import every frozen legacy module and CLI target
         run: |
           uv run --extra legacy python - <<'PY'
-          import importlib
           import json
+          import subprocess
+          import sys
           from importlib.metadata import distribution
 
           manifest = json.load(open(
@@ -203,7 +204,15 @@ jobs:
               if name == "libero.lifelong" or name.startswith("libero.lifelong.")
           )
           for module in modules:
-              importlib.import_module(module)
+              print(f"importing {module}", flush=True)
+              subprocess.run(
+                  [
+                      sys.executable,
+                      "-c",
+                      f"import importlib; importlib.import_module({module!r})",
+                  ],
+                  check=True,
+              )
           entrypoints = {
               entry.name: entry.value
               for entry in distribution("libero-warp").entry_points
