@@ -498,3 +498,47 @@ robosuite task object, so existing official callers keep their current behavior.
 The robosuite task remains authoritative for cameras, state, predicates, and
 controller state. Local Python 3.12 evidence passes the 8 static G1 wrapper tests,
 15 migration/MuJoCo compatibility tests, and the real headless official golden.
+
+## 11. G3 first runnable Warp slice
+
+The first G3 slice is runnable but does not yet claim the complete G3 hard gate.
+`make_env(EnvConfig(..., backend="warp", num_worlds=1))` now constructs a
+`WarpBatchEnv` backed by the existing exact `TaskCompiler` and `MJWarpSpike`.
+It provides:
+
+- trusted init-bank reset for world zero;
+- caller-ordered cameras with unequal resolutions, RGB, optional metric depth,
+  and optional segmentation;
+- CUDA `ObservationBatch` outputs for visuals, reset-boundary proprioception,
+  FULLPHYSICS state, and simulator time;
+- state and render-exact snapshot reads;
+- idempotent close and explicit closed-object failures;
+- a clear `NotImplementedError` for policy `step()` until Warp `OSC_POSE` exists.
+
+There is no official physics or rendering fallback in the returned observation.
+The official compiler-owned task is used only at reset to obtain authoritative
+controller-derived proprioception, which cannot be reconstructed from MuJoCo
+qpos/qvel alone.
+
+AutoDL smoke evidence used an RTX 4090 D with the server's existing
+Torch 2.13.0+cu130 / CUDA 13 stack plus isolated MuJoCo 3.11.0,
+mujoco-warp 3.11.0, Warp 1.16.0, and robosuite 1.5.2. The public GPU test passed
+in 14.79 seconds after the one-time Warp kernel cache was populated. It exercised
+three unequal-resolution cameras, RGB, depth, instance segmentation, two trusted
+resets, state/proprio/time reads, snapshot, step rejection, and repeated close.
+All returned observation tensors were finite and on `cuda:0`.
+
+The project runtime remains qualified on Python 3.12 by the G1 workflow; this
+fast GPU smoke reused the available Python 3.10 CUDA environment and is recorded
+as such rather than presented as a second Python qualification.
+
+The regenerated schema-v2 manifest SHA-256 is
+`ff90f81eeb427cbb3358f589b93842d720f0f1a0b2b1225c002a1ab4871166f2`.
+
+Still required before declaring the full G3 gate complete:
+
+- official-vs-Warp reset/state/camera oracle coverage across representative
+  suites, scenes, objects, and segmentation modes;
+- predicate/minimal task readout;
+- the original `ControlEnv` observation-dict compatibility surface;
+- repeated-construction resource-growth evidence.

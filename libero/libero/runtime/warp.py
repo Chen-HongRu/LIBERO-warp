@@ -1,18 +1,218 @@
-"""M1 MJWarp spike runner; policy-action OSC support is intentionally deferred."""
+"""Minimal MJWarp runtime plus the retained M1 benchmark runner.
+
+The public runtime intentionally stops before policy-action OSC support.  It
+does provide the useful reset / state / render loop on CUDA so applications can
+start consuming the Warp backend without waiting for action continuation.
+"""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from numbers import Integral
 from typing import Any
 from warnings import warn
 
+import numpy as np
 import torch
 
 from libero.libero.runtime.compiler import TaskCompiler
-from libero.libero.runtime.types import CameraConfig, EnvConfig
+from libero.libero.runtime.types import (
+    CameraConfig,
+    EnvConfig,
+    ObservationBatch,
+    RenderExactState,
+    StepBatch,
+)
 from libero.libero.warp import MJWarpSpike
+
+
+class WarpBatchEnv:
+    """Single-world CUDA reset / state / render runtime for G3.
+
+    Trusted LIBERO init states are resolved through the compiler's state bank.
+    Visuals and MuJoCo state come from MJWarp.  Proprioception is sampled by the
+    official source environment at reset time and uploaded once; there is no
+    CPU rendering fallback in the returned observation.  Policy actions remain
+    unavailable until the OSC controller is implemented for Warp.
+    """
+
+    def __init__(self, config: EnvConfig) -> None:
+        if config.backend != "warp":
+            raise ValueError("WarpBatchEnv requires EnvConfig.backend='warp'.")
+        if config.num_worlds != 1:
+            raise ValueError("The G3 Warp runtime currently supports num_worlds=1.")
+        self.config = config
+        self._closed = False
+        self._last_proprio: torch.Tensor | None = None
+        compiled = TaskCompiler().compile(config)
+        spike: MJWarpSpike | None = None
+        try:
+            spike = MJWarpSpike(compiled, num_worlds=1)
+            spike.configure_renderer(config.cameras)
+        except Exception:
+            if spike is None:
+                compiled.close()
+            else:
+                spike.close()
+            raise
+        self._spike = spike
+        self.task = compiled.official_env.task
+
+    @property
+    def device(self) -> torch.device:
+        """CUDA device holding every returned observation tensor."""
+        self._ensure_open()
+        return self._spike.device
+
+    def reset(
+        self,
+        *,
+        init_state: torch.Tensor | np.ndarray | None = None,
+        world_ids: Sequence[int] | np.ndarray | torch.Tensor | None = None,
+    ) -> ObservationBatch:
+        """Reset world zero to the first or a caller-selected trusted init state."""
+        self._ensure_open()
+        self._validate_world_ids(world_ids)
+        state_index = self._resolve_state_index(init_state)
+        state_indices = torch.tensor(
+            [state_index], device=self.device, dtype=torch.int64
+        )
+        self._spike.reset_all(state_indices)
+
+        # Controller-derived proprio is not reconstructible from qpos/qvel alone.
+        # The compiler-owned official environment is authoritative at this reset
+        # boundary; upload its exact result once while Warp owns returned visuals,
+        # physics state, and simulator time.
+        legacy_state = self._spike.compiled.init_state_bank.legacy_flattened[
+            state_index
+        ]
+        official_observation = self._spike.compiled.official_env.reset(
+            init_state=legacy_state
+        )
+        self._last_proprio = official_observation.proprio.to(
+            device=self.device, dtype=torch.float32
+        )
+        return self._make_observation()
+
+    def step(self, actions: torch.Tensor | np.ndarray) -> StepBatch:
+        """Reject policy actions until the Warp OSC controller is implemented."""
+        del actions
+        self._ensure_open()
+        raise NotImplementedError(
+            "Warp policy step is not available yet: G3 supports reset/state/render; "
+            "OSC_POSE action-to-control continuation is the next runtime slice."
+        )
+
+    def get_state(self) -> torch.Tensor:
+        """Return current MuJoCo FULLPHYSICS state as a CUDA ``[1, D]`` tensor."""
+        self._ensure_open()
+        return self._spike.fullphysics_state()
+
+    def get_proprio(self) -> torch.Tensor:
+        """Return reset-boundary official proprioception on CUDA."""
+        self._ensure_open()
+        if self._last_proprio is None:
+            raise RuntimeError("Call reset() before requesting proprioception.")
+        return self._last_proprio
+
+    def get_sim_time(self) -> torch.Tensor:
+        """Return current MJWarp simulator time as a CUDA ``[1]`` tensor."""
+        self._ensure_open()
+        return self._spike.physics_readout()["time"].reshape(-1)
+
+    def get_render_exact_state(self) -> RenderExactState:
+        """Return a detached render snapshot; action continuation is unsupported."""
+        self._ensure_open()
+        return RenderExactState(
+            state=self.get_state().clone(), sim_time=self.get_sim_time().clone()
+        )
+
+    def close(self) -> None:
+        """Idempotently release CUDA, renderer, and compiler-owned resources."""
+        if self._closed:
+            return
+        self._closed = True
+        self._last_proprio = None
+        self._spike.close()
+
+    def _make_observation(self) -> ObservationBatch:
+        rendered = self._spike.render()
+        return ObservationBatch(
+            rgb=rendered.rgb,
+            depth=rendered.depth,
+            segmentation=rendered.segmentation,
+            proprio=self.get_proprio(),
+            state=self.get_state(),
+            sim_time=self.get_sim_time(),
+        )
+
+    def _resolve_state_index(self, init_state: torch.Tensor | np.ndarray | None) -> int:
+        if init_state is None:
+            return 0
+        if isinstance(init_state, torch.Tensor):
+            value = init_state.detach().to(device="cpu")
+        elif isinstance(init_state, np.ndarray):
+            value = torch.from_numpy(init_state)
+        else:
+            raise TypeError("init_state must be a torch.Tensor or numpy.ndarray.")
+        if value.ndim == 2 and value.shape[0] == 1:
+            value = value[0]
+        elif value.ndim != 1:
+            raise ValueError(
+                "Warp init_state must have shape [D] or [1, D]; "
+                f"got {list(value.shape)}."
+            )
+        if not torch.is_floating_point(value) and value.dtype not in {
+            torch.uint8,
+            torch.int8,
+            torch.int16,
+            torch.int32,
+            torch.int64,
+        }:
+            raise TypeError("init_state must have a real numeric dtype.")
+        value = value.to(dtype=torch.float64)
+        if not torch.isfinite(value).all():
+            raise ValueError("init_state must contain only finite values.")
+        bank = self._spike.compiled.init_state_bank.legacy_flattened
+        if value.shape != bank.shape[1:]:
+            raise ValueError(
+                f"init_state must contain {bank.shape[1]} values; got {value.numel()}."
+            )
+        matches = torch.all(torch.isclose(bank, value, rtol=0.0, atol=1e-7), dim=1)
+        indices = torch.nonzero(matches, as_tuple=False).flatten()
+        if indices.numel() == 0:
+            raise ValueError(
+                "Warp G3 accepts only trusted init states from this task's init-state "
+                "bank; arbitrary state upload is not enabled yet."
+            )
+        return int(indices[0])
+
+    @staticmethod
+    def _validate_world_ids(
+        world_ids: Sequence[int] | np.ndarray | torch.Tensor | None,
+    ) -> None:
+        if world_ids is None:
+            return
+        if isinstance(world_ids, torch.Tensor):
+            values = tuple(world_ids.detach().to(device="cpu").reshape(-1).tolist())
+        elif isinstance(world_ids, np.ndarray):
+            values = tuple(world_ids.reshape(-1).tolist())
+        elif isinstance(world_ids, Sequence) and not isinstance(
+            world_ids, (str, bytes)
+        ):
+            values = tuple(world_ids)
+        else:
+            raise TypeError(
+                "world_ids must be a sequence, numpy array, or torch tensor."
+            )
+        if len(values) != 1 or not isinstance(values[0], Integral) or values[0] != 0:
+            raise ValueError("The G3 Warp runtime only accepts world_ids=[0].")
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("This environment is closed.")
 
 
 class _SpikeBenchmarkRunner:

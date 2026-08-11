@@ -1254,7 +1254,7 @@
       "python_requires": ">=3.12,<3.13",
       "version": "0.1.0"
     },
-    "head_commit": "5b7cde40a3fed136ded1b929db805c7c141f117b",
+    "head_commit": "c3008ae8e63b9fc2fcf9b800a9e46c84633b809d",
     "modules": {
       "benchmark_scripts": {
         "declared_symbols": {},
@@ -30906,7 +30906,7 @@
         },
         "is_package": true,
         "path": "libero/libero/runtime/__init__.py",
-        "sha256": "200e5acc49f3b7cb32785abc664ce889e95b40ca06faf6507f1fff16c385b26b",
+        "sha256": "4e2037571da449429622690af09e3c777569946dd21a1db5043174a301ba4de5",
         "star_imports": []
       },
       "libero.libero.runtime.compiler": {
@@ -32372,6 +32372,11 @@
             "origin_module": "libero.libero.runtime.types",
             "origin_name": "EnvConfig"
           },
+          "Integral": {
+            "kind": "symbol_import",
+            "origin_module": "numbers",
+            "origin_name": "Integral"
+          },
           "MJWarpSpike": {
             "kind": "symbol_import",
             "origin_module": "libero.libero.warp",
@@ -32382,10 +32387,106 @@
             "origin_module": "collections.abc",
             "origin_name": "Mapping"
           },
+          "ObservationBatch": {
+            "kind": "symbol_import",
+            "origin_module": "libero.libero.runtime.types",
+            "origin_name": "ObservationBatch"
+          },
+          "RenderExactState": {
+            "kind": "symbol_import",
+            "origin_module": "libero.libero.runtime.types",
+            "origin_name": "RenderExactState"
+          },
+          "Sequence": {
+            "kind": "symbol_import",
+            "origin_module": "collections.abc",
+            "origin_name": "Sequence"
+          },
+          "StepBatch": {
+            "kind": "symbol_import",
+            "origin_module": "libero.libero.runtime.types",
+            "origin_name": "StepBatch"
+          },
           "TaskCompiler": {
             "kind": "symbol_import",
             "origin_module": "libero.libero.runtime.compiler",
             "origin_name": "TaskCompiler"
+          },
+          "WarpBatchEnv": {
+            "bases": [],
+            "kind": "class",
+            "members": {
+              "__init__": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, config: EnvConfig) -> None"
+              },
+              "_ensure_open": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> None"
+              },
+              "_make_observation": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> ObservationBatch"
+              },
+              "_resolve_state_index": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, init_state: torch.Tensor | np.ndarray | None) -> int"
+              },
+              "_validate_world_ids": {
+                "decorators": [
+                  "staticmethod"
+                ],
+                "kind": "method",
+                "signature": "(world_ids: Sequence[int] | np.ndarray | torch.Tensor | None) -> None"
+              },
+              "close": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> None"
+              },
+              "device": {
+                "decorators": [
+                  "property"
+                ],
+                "kind": "method",
+                "signature": "(self) -> torch.device"
+              },
+              "get_proprio": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> torch.Tensor"
+              },
+              "get_render_exact_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> RenderExactState"
+              },
+              "get_sim_time": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> torch.Tensor"
+              },
+              "get_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> torch.Tensor"
+              },
+              "reset": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, *, init_state: torch.Tensor | np.ndarray | None=None, world_ids: Sequence[int] | np.ndarray | torch.Tensor | None=None) -> ObservationBatch"
+              },
+              "step": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, actions: torch.Tensor | np.ndarray) -> StepBatch"
+              }
+            },
+            "signature": "(self, config: EnvConfig) -> None"
           },
           "_SpikeBenchmarkRunner": {
             "bases": [],
@@ -32492,6 +32593,10 @@
             "kind": "function",
             "signature": "(num_worlds: int) -> _SpikeBenchmarkRunner"
           },
+          "np": {
+            "kind": "module_import",
+            "origin_module": "numpy"
+          },
           "replace": {
             "kind": "symbol_import",
             "origin_module": "dataclasses",
@@ -32540,6 +32645,11 @@
             },
             "origin": "libero.libero.runtime.types:EnvConfig",
             "signature": "()"
+          },
+          "Integral": {
+            "kind": "symbol_import",
+            "origin_module": "numbers",
+            "origin_name": "Integral"
           },
           "MJWarpSpike": {
             "bases": [],
@@ -32685,6 +32795,50 @@
             "origin_module": "collections.abc",
             "origin_name": "Mapping"
           },
+          "ObservationBatch": {
+            "bases": [],
+            "kind": "class",
+            "members": {
+              "__post_init__": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> None"
+              }
+            },
+            "origin": "libero.libero.runtime.types:ObservationBatch",
+            "signature": "()"
+          },
+          "RenderExactState": {
+            "bases": [],
+            "kind": "class",
+            "members": {
+              "__post_init__": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> None"
+              }
+            },
+            "origin": "libero.libero.runtime.types:RenderExactState",
+            "signature": "()"
+          },
+          "Sequence": {
+            "kind": "symbol_import",
+            "origin_module": "collections.abc",
+            "origin_name": "Sequence"
+          },
+          "StepBatch": {
+            "bases": [],
+            "kind": "class",
+            "members": {
+              "__post_init__": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> None"
+              }
+            },
+            "origin": "libero.libero.runtime.types:StepBatch",
+            "signature": "()"
+          },
           "TaskCompiler": {
             "bases": [],
             "kind": "class",
@@ -32712,6 +32866,82 @@
             "origin": "libero.libero.runtime.compiler:TaskCompiler",
             "signature": "()"
           },
+          "WarpBatchEnv": {
+            "bases": [],
+            "kind": "class",
+            "members": {
+              "__init__": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, config: EnvConfig) -> None"
+              },
+              "_ensure_open": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> None"
+              },
+              "_make_observation": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> ObservationBatch"
+              },
+              "_resolve_state_index": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, init_state: torch.Tensor | np.ndarray | None) -> int"
+              },
+              "_validate_world_ids": {
+                "decorators": [
+                  "staticmethod"
+                ],
+                "kind": "method",
+                "signature": "(world_ids: Sequence[int] | np.ndarray | torch.Tensor | None) -> None"
+              },
+              "close": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> None"
+              },
+              "device": {
+                "decorators": [
+                  "property"
+                ],
+                "kind": "method",
+                "signature": "(self) -> torch.device"
+              },
+              "get_proprio": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> torch.Tensor"
+              },
+              "get_render_exact_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> RenderExactState"
+              },
+              "get_sim_time": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> torch.Tensor"
+              },
+              "get_state": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self) -> torch.Tensor"
+              },
+              "reset": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, *, init_state: torch.Tensor | np.ndarray | None=None, world_ids: Sequence[int] | np.ndarray | torch.Tensor | None=None) -> ObservationBatch"
+              },
+              "step": {
+                "decorators": [],
+                "kind": "method",
+                "signature": "(self, actions: torch.Tensor | np.ndarray) -> StepBatch"
+              }
+            },
+            "signature": "(self, config: EnvConfig) -> None"
+          },
           "annotations": {
             "kind": "symbol_import",
             "origin_module": "__future__",
@@ -32725,6 +32955,10 @@
             "decorators": [],
             "kind": "function",
             "signature": "(num_worlds: int) -> _SpikeBenchmarkRunner"
+          },
+          "np": {
+            "kind": "module_import",
+            "origin_module": "numpy"
           },
           "replace": {
             "kind": "symbol_import",
@@ -32743,7 +32977,7 @@
         },
         "is_package": false,
         "path": "libero/libero/runtime/warp.py",
-        "sha256": "555f1b194fdde95569531a655a2b79bdca6f88c9df77ad7b8ac8673ff64a03d4",
+        "sha256": "b677e150bb3a58bc6e0ce7198e4e62fbcfbda90bbbfd845030ee0a540000ec49",
         "star_imports": []
       },
       "libero.libero.utils": {

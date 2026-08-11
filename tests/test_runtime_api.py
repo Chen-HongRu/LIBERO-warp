@@ -7,7 +7,9 @@ test is deliberately opt-in because it constructs an official robosuite task.
 from __future__ import annotations
 
 import inspect
+import sys
 from dataclasses import fields
+from types import ModuleType
 from typing import get_type_hints
 
 import pytest
@@ -152,6 +154,27 @@ def test_make_env_return_type_is_a_backend_neutral_protocol() -> None:
     return_type = get_type_hints(make_env)["return"]
     assert return_type is not OfficialBatchEnv
     assert getattr(return_type, "_is_protocol", False)
+
+
+@pytest.mark.static
+def test_make_env_dispatches_warp_without_importing_it_for_official(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    CameraConfig, EnvConfig, *_, make_env = _runtime_api()
+    sentinel = object()
+    module = ModuleType("libero.libero.runtime.warp")
+    module.WarpBatchEnv = lambda config: (sentinel, config)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "libero.libero.runtime.warp", module)
+    config = EnvConfig(
+        suite="libero_spatial",
+        task_index=0,
+        cameras=[CameraConfig("agentview", 16, 16)],
+        backend="warp",
+    )
+
+    result = make_env(config)
+
+    assert result == (sentinel, config)
 
 
 @pytest.mark.static
@@ -395,3 +418,76 @@ def test_official_runtime_rejects_multiple_worlds_before_constructing() -> None:
     )
     with pytest.raises(ValueError, match="num_worlds"):
         make_env(config)
+
+
+@pytest.mark.warp_gpu
+def test_warp_runtime_n1_reset_render_state_and_close_contract() -> None:
+    """Exercise the smallest useful public Warp runtime on a real CUDA host."""
+    if not torch.cuda.is_available():
+        pytest.fail("LIBERO_RUN_WARP_GPU=1 was set, but CUDA is unavailable")
+    CameraConfig, EnvConfig, ObservationBatch, _, make_env = _runtime_api()
+    config = EnvConfig(
+        suite="libero_spatial",
+        task_index=0,
+        cameras=(
+            CameraConfig("agentview", 48, 64),
+            CameraConfig("robot0_eye_in_hand", 32, 40, depth=True),
+            CameraConfig("sideview", 24, 36, segmentation="instance"),
+        ),
+        backend="warp",
+        num_worlds=1,
+        seed=0,
+    )
+    env = make_env(config)
+    try:
+        observation = env.reset()
+        assert isinstance(observation, ObservationBatch)
+        assert env.device.type == "cuda"
+        assert tuple(observation.rgb) == (
+            "agentview",
+            "robot0_eye_in_hand",
+            "sideview",
+        )
+        assert tuple(observation.depth) == ("robot0_eye_in_hand",)
+        assert tuple(observation.segmentation) == ("sideview",)
+        assert observation.rgb["agentview"].shape == (1, 48, 64, 3)
+        assert observation.rgb["robot0_eye_in_hand"].shape == (1, 32, 40, 3)
+        assert observation.rgb["sideview"].shape == (1, 24, 36, 3)
+        assert observation.depth["robot0_eye_in_hand"].shape == (1, 32, 40, 1)
+        assert observation.segmentation["sideview"].shape == (1, 24, 36, 1)
+        tensors = (
+            *observation.rgb.values(),
+            *observation.depth.values(),
+            *observation.segmentation.values(),
+            observation.proprio,
+            observation.state,
+            observation.sim_time,
+        )
+        assert all(value.device == env.device for value in tensors)
+        assert all(torch.isfinite(value).all() for value in tensors)
+        assert observation.sim_time.tolist() == [0.0]
+        assert torch.equal(env.get_state(), observation.state)
+        assert torch.equal(env.get_proprio(), observation.proprio)
+        assert torch.equal(env.get_sim_time(), observation.sim_time)
+
+        trusted_state = env._spike.compiled.init_state_bank.legacy_flattened[1]
+        second = env.reset(init_state=trusted_state, world_ids=[0])
+        expected = env._spike.compiled.init_state_bank.fullphysics[1].to(
+            env.device, dtype=torch.float32
+        )
+        torch.testing.assert_close(second.state[0], expected, rtol=0.0, atol=0.0)
+        with pytest.raises(ValueError, match="trusted init states"):
+            env.reset(init_state=torch.zeros_like(trusted_state))
+        with pytest.raises(ValueError, match=r"world_ids=\[0\]"):
+            env.reset(world_ids=[1])
+
+        snapshot = env.get_render_exact_state()
+        assert snapshot.state.device == env.device
+        assert snapshot.sim_time.device == env.device
+        with pytest.raises(NotImplementedError, match="OSC_POSE"):
+            env.step(torch.zeros((1, 7), device=env.device))
+    finally:
+        env.close()
+        env.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        env.get_state()

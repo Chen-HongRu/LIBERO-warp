@@ -1,4 +1,4 @@
-"""Frozen public runtime API for official and future Warp LIBERO backends."""
+"""Frozen public runtime API for official and Warp LIBERO backends."""
 
 from __future__ import annotations
 
@@ -27,14 +27,16 @@ from .types import (
 def make_env(config: EnvConfig) -> RuntimeEnv:
     """Create one configured runtime environment.
 
-    The official adapter accepts exactly one world. ``backend='warp'`` is
-    deliberately reserved until the MJWarp backend exists rather than falling
-    back to an implementation with different tensor/device semantics.
+    Both adapters currently accept exactly one world.  Importing the Warp
+    implementation is deferred so an official-only installation does not need
+    Torch CUDA, Warp, or MJWarp at module import time.
     """
     if not isinstance(config, EnvConfig):
         raise TypeError("make_env requires an EnvConfig instance.")
     if config.backend == "warp":
-        raise NotImplementedError("The Warp runtime backend is not available yet.")
+        from .warp import WarpBatchEnv
+
+        return WarpBatchEnv(config)
     return OfficialBatchEnv(config)
 
 
