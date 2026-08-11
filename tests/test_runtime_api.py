@@ -476,8 +476,14 @@ def test_warp_runtime_n1_reset_render_state_and_close_contract() -> None:
             env.device, dtype=torch.float32
         )
         torch.testing.assert_close(second.state[0], expected, rtol=0.0, atol=0.0)
-        with pytest.raises(ValueError, match="trusted init states"):
-            env.reset(init_state=torch.zeros_like(trusted_state))
+        custom_state = trusted_state.clone()
+        custom_state[0] = 0.125
+        custom = env.reset(init_state=custom_state)
+        torch.testing.assert_close(
+            custom.state[0], custom_state.to(env.device, dtype=torch.float32)
+        )
+        with pytest.raises(ValueError, match="finite"):
+            env.reset(init_state=torch.full_like(trusted_state, float("nan")))
         with pytest.raises(ValueError, match=r"world_ids=\[0\]"):
             env.reset(world_ids=[1])
 

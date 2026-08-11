@@ -1254,7 +1254,7 @@
       "python_requires": ">=3.12,<3.13",
       "version": "0.1.0"
     },
-    "head_commit": "c3008ae8e63b9fc2fcf9b800a9e46c84633b809d",
+    "head_commit": "cd819bd81678831b9839a37b5b5a765f193f191b",
     "modules": {
       "benchmark_scripts": {
         "declared_symbols": {},
@@ -32431,10 +32431,10 @@
                 "kind": "method",
                 "signature": "(self) -> ObservationBatch"
               },
-              "_resolve_state_index": {
+              "_normalize_init_state": {
                 "decorators": [],
                 "kind": "method",
-                "signature": "(self, init_state: torch.Tensor | np.ndarray | None) -> int"
+                "signature": "(self, init_state: torch.Tensor | np.ndarray) -> torch.Tensor"
               },
               "_validate_world_ids": {
                 "decorators": [
@@ -32885,10 +32885,10 @@
                 "kind": "method",
                 "signature": "(self) -> ObservationBatch"
               },
-              "_resolve_state_index": {
+              "_normalize_init_state": {
                 "decorators": [],
                 "kind": "method",
-                "signature": "(self, init_state: torch.Tensor | np.ndarray | None) -> int"
+                "signature": "(self, init_state: torch.Tensor | np.ndarray) -> torch.Tensor"
               },
               "_validate_world_ids": {
                 "decorators": [
@@ -32977,7 +32977,7 @@
         },
         "is_package": false,
         "path": "libero/libero/runtime/warp.py",
-        "sha256": "b677e150bb3a58bc6e0ce7198e4e62fbcfbda90bbbfd845030ee0a540000ec49",
+        "sha256": "6b5a5037718b41aa300e1b518fadeaa0e5fef0c551eeb0a9c42e1738f3093904",
         "star_imports": []
       },
       "libero.libero.utils": {

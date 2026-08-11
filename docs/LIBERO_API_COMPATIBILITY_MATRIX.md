@@ -506,7 +506,8 @@ The first G3 slice is runnable but does not yet claim the complete G3 hard gate.
 `WarpBatchEnv` backed by the existing exact `TaskCompiler` and `MJWarpSpike`.
 It provides:
 
-- trusted init-bank reset for world zero;
+- trusted default reset and arbitrary finite flattened FULLPHYSICS reset for
+  world zero;
 - caller-ordered cameras with unequal resolutions, RGB, optional metric depth,
   and optional segmentation;
 - CUDA `ObservationBatch` outputs for visuals, reset-boundary proprioception,
@@ -533,7 +534,7 @@ fast GPU smoke reused the available Python 3.10 CUDA environment and is recorded
 as such rather than presented as a second Python qualification.
 
 The regenerated schema-v2 manifest SHA-256 is
-`ff90f81eeb427cbb3358f589b93842d720f0f1a0b2b1225c002a1ab4871166f2`.
+`5800c24670d2ff01cd484ed30021f9dc9f195f5b04083517e71d3d8e0100990e`.
 
 Still required before declaring the full G3 gate complete:
 

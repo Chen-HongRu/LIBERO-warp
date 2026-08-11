@@ -31,11 +31,13 @@ from libero.libero.warp import MJWarpSpike
 class WarpBatchEnv:
     """Single-world CUDA reset / state / render runtime for G3.
 
-    Trusted LIBERO init states are resolved through the compiler's state bank.
-    Visuals and MuJoCo state come from MJWarp.  Proprioception is sampled by the
-    official source environment at reset time and uploaded once; there is no
-    CPU rendering fallback in the returned observation.  Policy actions remain
-    unavailable until the OSC controller is implemented for Warp.
+    The default reset uses the compiler's first trusted LIBERO init state;
+    callers may also provide any finite flattened FULLPHYSICS state with the
+    exact model width. Visuals and MuJoCo state come from MJWarp.
+    Proprioception is sampled by the official source environment at reset time
+    and uploaded once; there is no CPU rendering fallback in the returned
+    observation. Policy actions remain unavailable until the OSC controller is
+    implemented for Warp.
     """
 
     def __init__(self, config: EnvConfig) -> None:
@@ -72,22 +74,27 @@ class WarpBatchEnv:
         init_state: torch.Tensor | np.ndarray | None = None,
         world_ids: Sequence[int] | np.ndarray | torch.Tensor | None = None,
     ) -> ObservationBatch:
-        """Reset world zero to the first or a caller-selected trusted init state."""
+        """Reset world zero to the first trusted or a supplied flattened state."""
         self._ensure_open()
         self._validate_world_ids(world_ids)
-        state_index = self._resolve_state_index(init_state)
-        state_indices = torch.tensor(
-            [state_index], device=self.device, dtype=torch.int64
-        )
-        self._spike.reset_all(state_indices)
+        if init_state is None:
+            state_index = 0
+            legacy_state = self._spike.compiled.init_state_bank.legacy_flattened[
+                state_index
+            ]
+            self._spike.reset_all(
+                torch.tensor([state_index], device=self.device, dtype=torch.int64)
+            )
+        else:
+            legacy_state = self._normalize_init_state(init_state)
+            self._spike.reset_fullphysics(
+                legacy_state.to(device=self.device, dtype=torch.float32).unsqueeze(0)
+            )
 
         # Controller-derived proprio is not reconstructible from qpos/qvel alone.
         # The compiler-owned official environment is authoritative at this reset
         # boundary; upload its exact result once while Warp owns returned visuals,
         # physics state, and simulator time.
-        legacy_state = self._spike.compiled.init_state_bank.legacy_flattened[
-            state_index
-        ]
         official_observation = self._spike.compiled.official_env.reset(
             init_state=legacy_state
         )
@@ -148,9 +155,9 @@ class WarpBatchEnv:
             sim_time=self.get_sim_time(),
         )
 
-    def _resolve_state_index(self, init_state: torch.Tensor | np.ndarray | None) -> int:
-        if init_state is None:
-            return 0
+    def _normalize_init_state(
+        self, init_state: torch.Tensor | np.ndarray
+    ) -> torch.Tensor:
         if isinstance(init_state, torch.Tensor):
             value = init_state.detach().to(device="cpu")
         elif isinstance(init_state, np.ndarray):
@@ -175,19 +182,12 @@ class WarpBatchEnv:
         value = value.to(dtype=torch.float64)
         if not torch.isfinite(value).all():
             raise ValueError("init_state must contain only finite values.")
-        bank = self._spike.compiled.init_state_bank.legacy_flattened
-        if value.shape != bank.shape[1:]:
+        expected_width = self._spike.compiled.metadata.fullphysics_state_size
+        if value.shape != (expected_width,):
             raise ValueError(
-                f"init_state must contain {bank.shape[1]} values; got {value.numel()}."
+                f"init_state must contain {expected_width} values; got {value.numel()}."
             )
-        matches = torch.all(torch.isclose(bank, value, rtol=0.0, atol=1e-7), dim=1)
-        indices = torch.nonzero(matches, as_tuple=False).flatten()
-        if indices.numel() == 0:
-            raise ValueError(
-                "Warp G3 accepts only trusted init states from this task's init-state "
-                "bank; arbitrary state upload is not enabled yet."
-            )
-        return int(indices[0])
+        return value.contiguous()
 
     @staticmethod
     def _validate_world_ids(
