@@ -1,5 +1,12 @@
 import colorsys
+import importlib.metadata
 import os
+import platform
+import sys
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any
 
 import cv2
 import matplotlib.cm as cm
@@ -12,6 +19,199 @@ from robosuite.utils.errors import RandomizationError
 
 import libero.libero.envs.bddl_utils as BDDLUtils
 from libero.libero.envs.bddl_base_domain import TASK_MAPPING
+
+LIBERO_COMPAT_TARGET = "8f1084e3132a39270c3a13ebe37270a43ece2a01"
+_BACKEND_ENVIRONMENT_VARIABLE = "LIBERO_SIM_BACKEND"
+_OFFICIAL_CAPABILITIES = frozenset(
+    {
+        "camera_calibration",
+        "metric_depth",
+        "model_xml_read",
+        "model_xml_reset",
+        "predicate_success",
+        "reset",
+        "rgb",
+        "segmentation",
+        "single_env_numpy_api",
+        "state_flattened_read",
+        "state_flattened_write",
+        "step_osc_pose_7d",
+    }
+)
+
+
+class UnsupportedBackendOperation(RuntimeError):
+    """An explicitly selected backend cannot perform the requested operation."""
+
+    def __init__(
+        self,
+        *,
+        operation: str,
+        backend: str,
+        capability: str,
+        replacement: str,
+    ) -> None:
+        self.operation = operation
+        self.backend = backend
+        self.capability = capability
+        self.replacement = replacement
+        super().__init__(
+            f"Operation {operation!r} is unsupported by backend {backend!r}: "
+            f"missing capability {capability!r}. Use {replacement}."
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class BackendInfo:
+    """Immutable backend selection, capability, and build provenance."""
+
+    schema_version: int
+    requested_backend: str
+    selection_source: str
+    actual_backend: str
+    capabilities: frozenset[str]
+    libero_warp_version: str | None
+    libero_compat_target: str
+    dependency_versions: Mapping[str, str | None]
+    device: Mapping[str, str | int | None]
+    build: Mapping[str, str | None]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the frozen schema in deterministic JSON-compatible form."""
+        return {
+            "schema_version": self.schema_version,
+            "requested_backend": self.requested_backend,
+            "selection_source": self.selection_source,
+            "actual_backend": self.actual_backend,
+            "capabilities": sorted(self.capabilities),
+            "libero_warp_version": self.libero_warp_version,
+            "libero_compat_target": self.libero_compat_target,
+            "dependency_versions": dict(sorted(self.dependency_versions.items())),
+            "device": dict(sorted(self.device.items())),
+            "build": dict(sorted(self.build.items())),
+        }
+
+
+def _distribution_version(*distribution_names: str) -> str | None:
+    for distribution_name in distribution_names:
+        try:
+            return importlib.metadata.version(distribution_name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+    return None
+
+
+def _dependency_versions() -> Mapping[str, str | None]:
+    versions = {
+        "MJWarp": _distribution_version("mujoco-warp", "mjwarp"),
+        "MuJoCo": _distribution_version("mujoco"),
+        "NumPy": _distribution_version("numpy"),
+        "Torch": _distribution_version("torch"),
+        "Warp": _distribution_version("warp-lang", "warp"),
+        "robosuite": _distribution_version("robosuite"),
+    }
+    return MappingProxyType(dict(sorted(versions.items())))
+
+
+def _resolve_backend(backend: str | None) -> tuple[str, str]:
+    if backend is not None:
+        requested_backend = backend
+        selection_source = "constructor"
+    elif _BACKEND_ENVIRONMENT_VARIABLE in os.environ:
+        requested_backend = os.environ[_BACKEND_ENVIRONMENT_VARIABLE]
+        selection_source = "environment"
+    else:
+        requested_backend = "official"
+        selection_source = "default"
+
+    if not isinstance(requested_backend, str):
+        raise TypeError("backend must be exactly 'official' or 'warp'")
+    if requested_backend not in {"official", "warp"}:
+        raise ValueError(
+            "backend must be exactly 'official' or 'warp'; "
+            f"received {requested_backend!r} from {selection_source}"
+        )
+    if requested_backend == "warp":
+        raise UnsupportedBackendOperation(
+            operation="construct ControlEnv",
+            backend="warp",
+            capability="single_env_numpy_api",
+            replacement='backend="official" until the G3 Warp compatibility slice',
+        )
+    return requested_backend, selection_source
+
+
+def _official_backend_info(
+    *,
+    requested_backend: str,
+    selection_source: str,
+    render_device: str,
+) -> BackendInfo:
+    return BackendInfo(
+        schema_version=1,
+        requested_backend=requested_backend,
+        selection_source=selection_source,
+        actual_backend="official",
+        capabilities=_OFFICIAL_CAPABILITIES,
+        libero_warp_version=_distribution_version("libero-warp"),
+        libero_compat_target=LIBERO_COMPAT_TARGET,
+        dependency_versions=_dependency_versions(),
+        device=MappingProxyType(
+            {
+                "compute": "cpu",
+                "physics": "mujoco",
+                "render": render_device,
+            }
+        ),
+        build=MappingProxyType(
+            {
+                "cuda": None,
+                "platform": platform.platform(),
+                "python": platform.python_version(),
+                "python_implementation": platform.python_implementation(),
+                "python_runtime": sys.implementation.name,
+            }
+        ),
+    )
+
+
+def _official_render_device_identity(
+    *, render_gpu_device_id: int, rendering_enabled: bool
+) -> str:
+    """Resolve the renderer backend and device without reporting ``auto``."""
+    if not rendering_enabled:
+        return "disabled"
+
+    render_backend = os.environ.get("MUJOCO_GL", "").lower().strip()
+    if not render_backend:
+        render_backend = {
+            "Darwin": "cgl",
+            "Linux": "egl",
+            "Windows": "wgl",
+        }.get(platform.system(), "platform-default")
+    if render_backend == "osmesa":
+        return "osmesa:cpu"
+    if render_backend != "egl":
+        return render_backend
+
+    selected_devices = os.environ.get("MUJOCO_EGL_DEVICE_ID")
+    if selected_devices is None:
+        selected_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if selected_devices is None:
+        selected_device = 0 if render_gpu_device_id == -1 else render_gpu_device_id
+    elif selected_devices.isdigit():
+        selected_device = int(selected_devices)
+    else:
+        visible_devices = [int(value) for value in selected_devices.split(",")]
+        selected_device = (
+            visible_devices[0] if render_gpu_device_id == -1 else render_gpu_device_id
+        )
+        if render_gpu_device_id != -1 and render_gpu_device_id not in visible_devices:
+            raise AssertionError(
+                "render_gpu_device_id must be one of the devices visible through "
+                "MUJOCO_EGL_DEVICE_ID or CUDA_VISIBLE_DEVICES"
+            )
+    return f"egl:{selected_device}"
 
 
 def randomize_colors(count, bright=True):
@@ -51,8 +251,15 @@ class ControlEnv:
         camera_segmentations=None,
         renderer="mujoco",
         renderer_config=None,
+        *,
+        backend=None,
         **kwargs,
     ):
+        requested_backend, selection_source = _resolve_backend(backend)
+        render_device = _official_render_device_identity(
+            render_gpu_device_id=render_gpu_device_id,
+            rendering_enabled=has_renderer or has_offscreen_renderer,
+        )
         assert os.path.exists(bddl_file_name), (
             f"[error] {bddl_file_name} does not exist!"
         )
@@ -112,6 +319,15 @@ class ControlEnv:
             if caller_rng_state is not None:
                 self._legacy_rng_state = np.random.get_state()
                 np.random.set_state(caller_rng_state)
+        self._backend_info = _official_backend_info(
+            requested_backend=requested_backend,
+            selection_source=selection_source,
+            render_device=render_device,
+        )
+
+    @property
+    def backend_info(self) -> BackendInfo:
+        return self._backend_info
 
     @property
     def obj_of_interest(self):
@@ -235,6 +451,11 @@ class SegmentationRenderEnv(OffScreenRenderEnv):
         kwargs["camera_segmentations"] = camera_segmentations
         kwargs["camera_heights"] = camera_heights
         kwargs["camera_widths"] = camera_widths
+        self._segmentation_modes = frozenset(
+            {camera_segmentations}
+            if isinstance(camera_segmentations, str)
+            else camera_segmentations
+        )
         self.segmentation_id_mapping = {}
         self.instance_to_id = {}
         self.robot_segmentation_ids = frozenset()
@@ -246,7 +467,14 @@ class SegmentationRenderEnv(OffScreenRenderEnv):
     def reset(self):
         obs = super().reset()
         self.segmentation_id_mapping = {}
+        self.instance_to_id = {}
         self.robot_segmentation_ids = frozenset()
+
+        segmentation_modes = getattr(
+            self, "_segmentation_modes", frozenset({"instance"})
+        )
+        if "instance" not in segmentation_modes:
+            return obs
 
         robot_instance_names = set()
         for idx, robot in enumerate(self.env.robots):
@@ -281,6 +509,7 @@ class SegmentationRenderEnv(OffScreenRenderEnv):
 
     def get_segmentation_instances(self, segmentation_image):
         # get all instances' segmentation separately
+        self._require_instance_segmentation_mode()
         seg_img_dict = {}
         robot_mask = np.isin(segmentation_image, tuple(self.robot_segmentation_ids))
         seg_img_dict["robot"] = segmentation_image * robot_mask
@@ -306,6 +535,7 @@ class SegmentationRenderEnv(OffScreenRenderEnv):
 
     def get_segmentation_of_interest(self, segmentation_image):
         # get the combined segmentation of obj of interest
+        self._require_instance_segmentation_mode()
         # 1 for obj_of_interest
         # -1.0 for robot
         # 0 for other things
@@ -324,6 +554,15 @@ class SegmentationRenderEnv(OffScreenRenderEnv):
             ret_seg[segmentation_image == self.instance_to_id[obj]] = 1.0
         ret_seg[np.isin(segmentation_image, tuple(self.robot_segmentation_ids))] = -1.0
         return ret_seg
+
+    def _require_instance_segmentation_mode(self):
+        modes = getattr(self, "_segmentation_modes", frozenset({"instance"}))
+        if "instance" not in modes:
+            raise ValueError(
+                "Segmentation instance helpers require "
+                "camera_segmentations='instance'; received "
+                f"{sorted(modes)}."
+            )
 
     def segmentation_to_rgb(self, seg_im, random_colors=False):
         """

@@ -6,18 +6,25 @@ import ast
 import os
 import subprocess
 import sys
-import tomllib
 import zipfile
 from importlib.metadata import distribution
 from pathlib import Path
 
 import pytest
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 test matrix
+    import tomli as tomllib
+
 from .conftest import REPOSITORY_ROOT
 
 CONSOLE_ENTRYPOINTS = {
+    "libero.config_copy": "scripts.config_copy:main",
     "libero.create_template": "scripts.create_template:main",
     "libero.download_datasets": "benchmark_scripts.download_libero_datasets:main",
+    "lifelong.eval": "libero.lifelong.evaluate:main",
+    "lifelong.main": "libero.lifelong.main:main",
 }
 
 
@@ -33,14 +40,43 @@ def test_package_data_declares_runtime_assets_and_templates() -> None:
         "init_files/**/*",
     }
     assert "templates/*" in package_data["libero"]
+    assert "configs/**/*.yaml" in package_data["libero"]
     for relative_path in (
         "libero/libero/assets",
         "libero/libero/bddl_files",
         "libero/libero/init_files",
         "libero/templates/scene_template.xml",
         "libero/templates/problem_class_template.py",
+        "libero/configs/config.yaml",
+        "templates/scene_template.xml",
+        "templates/problem_class_template.py",
     ):
         assert (REPOSITORY_ROOT / relative_path).exists(), relative_path
+
+
+@pytest.mark.static
+def test_python_and_dependency_profiles_keep_accelerators_optional() -> None:
+    with (REPOSITORY_ROOT / "pyproject.toml").open("rb") as project_file:
+        project = tomllib.load(project_file)["project"]
+
+    assert project["requires-python"] == ">=3.10,<3.13"
+    core_names = {
+        requirement.split("==", maxsplit=1)[0].split(">=", maxsplit=1)[0]
+        for requirement in project["dependencies"]
+    }
+    assert {"mujoco", "robosuite"} <= core_names
+    assert {"torch", "mujoco-warp", "warp-lang"}.isdisjoint(core_names)
+
+    profiles = project["optional-dependencies"]
+    assert set(profiles) >= {"official", "tensor", "warp", "legacy"}
+    assert profiles["official"] == []
+    assert any(requirement.startswith("torch>=") for requirement in profiles["tensor"])
+    assert any(
+        requirement.startswith("mujoco-warp==") for requirement in profiles["warp"]
+    )
+    assert any(
+        requirement.startswith("warp-lang==") for requirement in profiles["warp"]
+    )
 
 
 @pytest.mark.static
@@ -94,9 +130,20 @@ def test_wheel_contains_and_imports_runtime_benchmark_modules(tmp_path: Path) ->
         "benchmarks/compare_m1_reports.py",
         "benchmarks/benchmark_warp_spike.py",
         "benchmarks/benchmark_official_spike.py",
+        "scripts/config_copy.py",
+        "libero/configs/config.yaml",
+        "libero/configs/policy/bc_rnn_policy.yaml",
+        "libero/lifelong/__init__.py",
+        "libero/lifelong/main.py",
+        "libero/lifelong/evaluate.py",
     }
     with zipfile.ZipFile(wheel) as archive:
-        assert expected_paths <= set(archive.namelist())
+        names = set(archive.namelist())
+        assert expected_paths <= names
+        assert any(name.endswith("/templates/scene_template.xml") for name in names)
+        assert any(
+            name.endswith("/templates/problem_class_template.py") for name in names
+        )
 
     environment = _isolated_cli_environment(tmp_path)
     environment["PYTHONPATH"] = str(wheel)
@@ -105,14 +152,18 @@ def test_wheel_contains_and_imports_runtime_benchmark_modules(tmp_path: Path) ->
             sys.executable,
             "-c",
             (
-                "import benchmarks.benchmark_official_spike as official; "
                 "import benchmarks.benchmark_warp_spike as warp; "
                 "import benchmarks.compare_m1_reports as compare; "
                 "import benchmarks.ctrl_trace as trace; "
-                "assert '.whl/' in official.__file__; "
+                "import libero.libero.envs as envs; "
+                "from libero.libero import benchmark; "
+                "from libero.libero.envs.env_wrapper import ControlEnv, DemoRenderEnv; "
                 "assert '.whl/' in warp.__file__; "
                 "assert '.whl/' in compare.__file__; "
-                "assert '.whl/' in trace.__file__"
+                "assert '.whl/' in trace.__file__; "
+                "assert '.whl/' in envs.__file__; "
+                "assert benchmark is not None; "
+                "assert ControlEnv is not None and DemoRenderEnv is not None"
             ),
         ],
         cwd=tmp_path,
@@ -123,6 +174,140 @@ def test_wheel_contains_and_imports_runtime_benchmark_modules(tmp_path: Path) ->
         timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+    config_destination = tmp_path / "wheel-configs"
+    config_copy = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.config_copy",
+            "--destination",
+            str(config_destination),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+    assert config_copy.returncode == 0, config_copy.stdout + config_copy.stderr
+    assert (config_destination / "config.yaml").is_file()
+
+    legacy_import = subprocess.run(
+        [sys.executable, "-c", "import libero.lifelong.algos"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+    assert legacy_import.returncode != 0
+    assert "pip install libero-warp[legacy]" in legacy_import.stderr
+
+    installed_environment = tmp_path / "installed-wheel"
+    create_environment = subprocess.run(
+        [
+            "uv",
+            "venv",
+            "--python",
+            sys.executable,
+            str(installed_environment),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+    assert create_environment.returncode == 0, (
+        create_environment.stdout + create_environment.stderr
+    )
+    executable_directory = installed_environment / (
+        "Scripts" if sys.platform == "win32" else "bin"
+    )
+    installed_python = executable_directory / (
+        "python.exe" if sys.platform == "win32" else "python"
+    )
+    install = subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(installed_python),
+            "--no-deps",
+            str(wheel),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+    assert install.returncode == 0, install.stdout + install.stderr
+
+    installed_config_destination = tmp_path / "installed-configs"
+    installed_cli = executable_directory / (
+        "libero.config_copy.exe" if sys.platform == "win32" else "libero.config_copy"
+    )
+    installed_smoke = subprocess.run(
+        [
+            str(installed_cli),
+            "--destination",
+            str(installed_config_destination),
+        ],
+        cwd=tmp_path,
+        env=_isolated_cli_environment(tmp_path),
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+    assert installed_smoke.returncode == 0, (
+        installed_smoke.stdout + installed_smoke.stderr
+    )
+    assert (installed_config_destination / "config.yaml").is_file()
+
+    installed_import = subprocess.run(
+        [
+            str(installed_python),
+            "-c",
+            (
+                "from importlib.metadata import distribution; "
+                "import libero.configs, libero.lifelong; "
+                "entries=distribution('libero-warp').entry_points; "
+                "names={entry.name for entry in entries}; "
+                f"assert {set(CONSOLE_ENTRYPOINTS)!r} <= names"
+            ),
+        ],
+        cwd=tmp_path,
+        env=_isolated_cli_environment(tmp_path),
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+    assert installed_import.returncode == 0, (
+        installed_import.stdout + installed_import.stderr
+    )
+
+    for legacy_command in ("lifelong.eval", "lifelong.main"):
+        legacy_cli = executable_directory / (
+            f"{legacy_command}.exe" if sys.platform == "win32" else legacy_command
+        )
+        missing_extra = subprocess.run(
+            [str(legacy_cli), "--help"],
+            cwd=tmp_path,
+            env=_isolated_cli_environment(tmp_path),
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=30,
+        )
+        assert missing_extra.returncode != 0
+        assert "pip install libero-warp[legacy]" in missing_extra.stderr
 
 
 @pytest.mark.static
@@ -178,13 +363,31 @@ def test_retained_packaged_sources_do_not_import_legacy_init_path() -> None:
 
 
 @pytest.mark.static
-def test_removed_config_copy_tool_is_not_retained() -> None:
-    assert not (REPOSITORY_ROOT / "scripts" / "config_copy.py").exists()
+def test_config_copy_tool_uses_installed_package_resources(tmp_path: Path) -> None:
+    destination = tmp_path / "copied-configs"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.config_copy",
+            "--destination",
+            str(destination),
+        ],
+        cwd=tmp_path,
+        env=_isolated_cli_environment(tmp_path),
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (destination / "config.yaml").is_file()
+    assert (destination / "policy" / "bc_rnn_policy.yaml").is_file()
 
 
 def _isolated_cli_environment(tmp_path: Path) -> dict[str, str]:
     config_dir = tmp_path / "libero-config"
-    config_dir.mkdir()
+    config_dir.mkdir(exist_ok=True)
     benchmark_root = REPOSITORY_ROOT / "libero" / "libero"
     (config_dir / "config.yaml").write_text(
         "\n".join(

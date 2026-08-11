@@ -7,7 +7,7 @@ name = "libero-warp"
 version = "0.1.0"
 description = "LIBERO tasks, assets, and official MuJoCo evaluation backend for LIBERO-warp"
 readme = "README.md"
-requires-python = ">=3.11,<3.12"
+requires-python = ">=3.10,<3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
@@ -29,19 +29,22 @@ dependencies = [
   "imageio>=2.34",
   "matplotlib>=3.8",
   "mujoco==3.11.0",
-  "mujoco-warp==3.11.0",
   "numpy==1.26.4",
   "opencv-python>=4.10",
   "pillow>=10",
   "pyyaml>=6.0.2",
   "robosuite==1.5.2",
   "termcolor>=2.4",
-  "torch==2.13.0",
   "tqdm>=4.66",
-  "warp-lang==1.16.0",
 ]
 
 [project.optional-dependencies]
+# The official backend is the compatibility baseline and therefore already
+# belongs to core. Keep the named profile so deployment commands can be uniform.
+official = []
+tensor = ["torch>=2.4,<3"]
+warp = ["mujoco-warp==3.11.0", "torch>=2.4,<3", "warp-lang==1.16.0"]
+legacy = ["einops>=0.4", "hydra-core>=1.2", "robomimic==0.2.0", "thop>=0.1.1", "torch>=2.4,<3", "torchvision>=0.20,<1", "transformers>=4.21", "wandb>=0.13"]
 huggingface = ["huggingface-hub>=0.24", "httpx[socks]>=0.28"]
 notebook = ["ipykernel>=6.29", "ipython>=8.22"]
 teleop = ["hidapi>=0.14"]
@@ -49,25 +52,32 @@ teleop = ["hidapi>=0.14"]
 [project.scripts]
 "libero.create_template" = "scripts.create_template:main"
 "libero.download_datasets" = "benchmark_scripts.download_libero_datasets:main"
+"libero.config_copy" = "scripts.config_copy:main"
+"lifelong.eval" = "libero.lifelong.evaluate:main"
+"lifelong.main" = "libero.lifelong.main:main"
 
 [tool.setuptools.packages.find]
 include = ["benchmark_scripts*", "benchmarks*", "libero*", "scripts*"]
 
 [tool.setuptools.package-data]
-libero = ["templates/*"]
+libero = ["configs/**/*.yaml", "templates/*"]
 "libero.libero" = [
   "assets/**/*",
   "bddl_files/**/*",
   "init_files/**/*",
 ]
 
+[tool.setuptools.data-files]
+"templates" = ["templates/scene_template.xml", "templates/problem_class_template.py"]
+
 [dependency-groups]
 dev = [
   "pytest>=8.3",
+  "tomli>=2; python_version < '3.11'",
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

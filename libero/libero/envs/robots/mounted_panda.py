@@ -1,5 +1,4 @@
 import numpy as np
-
 from robosuite.models.robots.manipulators.manipulator_model import ManipulatorModel
 from robosuite.utils.mjcf_utils import xml_path_completion
 
@@ -8,7 +7,8 @@ class MountedPanda(ManipulatorModel):
     """
     Panda is a sensitive single-arm robot designed by Franka.
     Args:
-        idn (int or str): Number or some other unique identification string for this robot instance
+        idn (int or str): Number or another unique identification string for this
+            robot instance.
     """
 
     arms = ["right"]
@@ -24,6 +24,11 @@ class MountedPanda(ManipulatorModel):
     @property
     def default_base(self):
         return "RethinkMount"
+
+    @property
+    def default_mount(self):
+        """Legacy robosuite pre-1.5 name for :attr:`default_base`."""
+        return self.default_base
 
     @property
     def default_gripper(self):

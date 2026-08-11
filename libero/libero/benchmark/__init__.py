@@ -3,8 +3,6 @@ import os
 from pathlib import Path
 from typing import NamedTuple
 
-import torch
-
 from libero.libero import get_libero_path
 from libero.libero.benchmark.libero_suite_task_map import libero_task_map
 
@@ -186,6 +184,14 @@ class Benchmark(abc.ABC):
                 "Expected a trusted local LIBERO init-state file at "
                 f"{init_states_path}."
             )
+        try:
+            import torch
+        except ImportError as error:
+            raise RuntimeError(
+                "Loading LIBERO .pruned_init files requires the optional Torch "
+                "runtime. Install 'libero-warp[tensor]' or provide Torch through "
+                "the managed environment."
+            ) from error
         init_states = torch.load(str(init_states_path), weights_only=False)
         return init_states
 
